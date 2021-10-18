@@ -8,6 +8,8 @@ Multi-person, multi-camera 3D human pose visualization tool built using
 [Mayavi](https://docs.enthought.com/mayavi/mayavi/). As used
 in [MeTRAbs](https://github.com/isarandi/metrabs) visualizations.
 
+**This repo does not contain pose estimation code, only the visualization part.**
+
 ## Gist of usage
 
 ```python

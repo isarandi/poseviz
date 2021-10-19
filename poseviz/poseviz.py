@@ -42,29 +42,27 @@ class PoseViz:
         self.visualizer_process.start()
 
     def update(self, frame, boxes, poses, camera, poses_true=(), poses_alt=(), block=True):
-        d = self.downscale
-        if d != 1:
-            frame = frame[d // 2::d, d // 2::d].copy()
-            boxes = boxes / d
-            camera = camera.copy()
-            camera.scale_output(1 / d)
-        try:
-            self.q_posedata.put(
-                [ViewInfo(frame, boxes, poses, camera, poses_true, poses_alt)], block=block)
-        except queue.Full:
-            print('skipping')
+        viewinfo = ViewInfo(frame, boxes, poses, camera, poses_true, poses_alt)
+        self.update_multiview([viewinfo], block=block)
 
-    def update_multiview(self, view_infos: List[ViewInfo]):
+    def update_multiview(self, view_infos: List[ViewInfo], block=True):
+        view_infos = list(map(viewinfo_tf_to_numpy, view_infos))
+
         d = self.downscale
         if d != 1:
             rescaled_cameras = [v.camera.copy() for v in view_infos]
             for c in rescaled_cameras:
                 c.scale_output(1 / d)
+
             view_infos = [
                 ViewInfo(v.frame[d // 2::d, d // 2::d].copy(), v.boxes / d, v.poses, c,
                          v.poses_true, v.poses_alt)
                 for v, c in zip(view_infos, rescaled_cameras)]
-        self.q_posedata.put(view_infos)
+
+        try:
+            self.q_posedata.put(view_infos, block=block)
+        except queue.Full:
+            pass
 
     def new_sequence(self):
         self.q_posedata.put('new_sequence')
@@ -273,6 +271,21 @@ class PoseVizMayaviSide:
                 self.initialized_camera = False
             except ValueError:
                 pass
+
+
+def viewinfo_tf_to_numpy(v: ViewInfo):
+    return ViewInfo._make(map(tf_to_numpy, v))
+
+
+def tf_to_numpy(x):
+    try:
+        import tensorflow as tf
+    except ImportError:
+        return x
+
+    if isinstance(x, (tf.Tensor, tf.RaggedTensor, tf.SparseTensor)):
+        return x.numpy()
+    return x
 
 
 def _main_visualize(*args, **kwargs):

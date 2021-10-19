@@ -1,8 +1,10 @@
 # PoseViz – 3D Human Pose Visualizer
 
-<p align="center"><img src=screenshot.jpg width="60%"></p>
-<p align="center"><img src=screenshot2.jpg width="60%"></p>
-<p align="center"><img src=screenshot_multicam.jpg width="60%"></p>
+<p align="center">
+  <img src=screenshot.jpg width="30%">
+  <img src=screenshot2.jpg width="30%">
+  <img src=screenshot_multicam.jpg width="30%">
+</p>
 
 Multi-person, multi-camera 3D human pose visualization tool built using
 [Mayavi](https://docs.enthought.com/mayavi/mayavi/). As used

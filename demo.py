@@ -1,6 +1,5 @@
 import poseviz
 import numpy as np
-import poseviz.cameralib
 
 
 def main():

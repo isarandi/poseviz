@@ -24,7 +24,7 @@ for frame in frames:
     viz.update(frame=frame, boxes=bounding_boxes, poses=poses3d, camera=camera)
 ```
 
-See also [```demo.py```](demo.py.)
+See also [```demo.py```](demo.py).
 
 The main feature of this tool is that the graphical event loop is hidden from the library user. We want to write code in terms of the *prediction loop* of the human pose estimator, not from the point of view of the visualizer tool.
 

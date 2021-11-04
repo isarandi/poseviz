@@ -45,6 +45,8 @@ install PoseViz via pip.
 
 ```bash
 conda install mayavi -c conda-forge
+git clone https://github.com/isarandi/poseviz.git
+cd poseviz
 pip install .
 ```
 

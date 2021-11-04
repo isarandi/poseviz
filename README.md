@@ -34,7 +34,13 @@ Detailed docs TBA.
 
 ## Installation
 
-Install Mayavi via Conda (the Mayavi pip package has compilation problems), clone this repo and
+PoseViz is released as a conda package (experimental):
+
+```bash
+conda install -c isarandi poseviz 
+```
+
+Alternatively, in case the above doesn't work, install Mayavi via conda (the Mayavi pip package has compilation problems), clone this repo and
 install PoseViz via pip.
 
 ```bash

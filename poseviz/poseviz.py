@@ -1,12 +1,14 @@
-import poseviz.colors
 import collections
+import contextlib
 import itertools
 import multiprocessing as mp
-import poseviz.video_writing
 import queue
 from typing import List
 
 import numpy as np
+
+import poseviz.colors
+import poseviz.video_writing
 
 ViewInfo = collections.namedtuple(
     'ViewInfo', ['frame', 'boxes', 'poses', 'camera', 'poses_true', 'poses_alt'],
@@ -18,7 +20,8 @@ class PoseViz:
             self, joint_names, joint_edges, camera_type='free', n_views=1, world_up=(0, -1, 0),
             ground_plane_height=-1000, downscale=1, viz_fps=100, queue_size=64, write_video=False,
             multicolor_detections=False, snap_to_cam_on_scene_change=True, high_quality=True,
-            draw_2d_pose=False, show_field_of_view=True):
+            draw_2d_pose=False, show_field_of_view=True, resolution=(1280, 720),
+            use_virtual_display=False, show_virtual_display=True):
 
         self.q_posedata = mp.JoinableQueue(queue_size)
 
@@ -38,7 +41,8 @@ class PoseViz:
             target=_main_visualize, args=(
                 self.q_posedata, self.q_out_video_frames, joint_names, joint_edges, camera_type,
                 n_views, world_up, ground_plane_height, viz_fps, multicolor_detections,
-                snap_to_cam_on_scene_change, high_quality, draw_2d_pose, show_field_of_view))
+                snap_to_cam_on_scene_change, high_quality, draw_2d_pose, show_field_of_view,
+                resolution, use_virtual_display, show_virtual_display))
         self.visualizer_process.start()
 
     def update(self, frame, boxes, poses, camera, poses_true=(), poses_alt=(), block=True):
@@ -92,7 +96,8 @@ class PoseVizMayaviSide:
     def __init__(
             self, q_posedata, q_out_video_frames, joint_names, joint_edges, camera_type, n_views,
             world_up, ground_plane_height, fps, multicolor_detections, snap_to_cam_on_scene_change,
-            high_quality, draw_2d_pose, show_field_of_view):
+            high_quality, draw_2d_pose, show_field_of_view, resolution, use_virtual_display,
+            show_virtual_display):
 
         self.q_posedata = q_posedata
         self.q_out_video_frames = q_out_video_frames
@@ -112,65 +117,78 @@ class PoseVizMayaviSide:
         self.paused = False
         self.current_viewinfos = None
         self.high_quality = high_quality
-        self.show_field_of_view = show_field_of_view
         self.draw_2d_pose = draw_2d_pose
+        self.show_field_of_view = show_field_of_view
+        self.resolution = resolution
+        self.use_virtual_display = use_virtual_display
+        self.show_virtual_display = show_virtual_display
 
     def run_loop(self):
-        # Imports are here so Mayavi is loaded in the visualizer process
+        if self.use_virtual_display:
+            import pyvirtualdisplay
+            display = pyvirtualdisplay.Display(
+                visible=self.show_virtual_display, size=self.resolution)
+        else:
+            display = contextlib.nullcontext()
+
+        with display:
+            # Imports are here so Mayavi is loaded in the visualizer process,
+            # and potentially under the virtual display
+            from mayavi import mlab
+            import poseviz.init
+            import poseviz.components.main_viz
+            import poseviz.components.ground_plane_viz
+            import poseviz.mayavi_util
+            fig = poseviz.init.initialize(size=self.resolution)
+            fig.scene.interactor.add_observer('KeyPressEvent', self._on_keypress)
+            poseviz.components.ground_plane_viz.draw_checkerboard(
+                ground_plane_height=self.ground_plane_height)
+            poseviz.mayavi_util.set_world_up(self.world_up)
+            self.view_visualizers = [poseviz.components.main_viz.MainViz(
+                self.joint_info, self.joint_info, self.joint_info, self.camera_type, True,
+                self.high_quality, show_field_of_view=self.show_field_of_view)
+                for _ in range(self.n_views)]
+            delay = max(10, int(round(1000 / self.fps)))
+
+            # Need to store it in a variable to make sure it's not
+            # destructed by the garbage collector!
+            _ = mlab.animate(delay=delay, ui=False)(self.animate)(fig)
+            mlab.show()
+
+    def animate(self, fig):
         from mayavi import mlab
-        import poseviz.init
-        import poseviz.components.main_viz
-        import poseviz.components.ground_plane_viz
-        import poseviz.mayavi_util
-        fig = poseviz.init.initialize()
-        fig.scene.interactor.add_observer('KeyPressEvent', self._on_keypress)
-        poseviz.components.ground_plane_viz.draw_checkerboard(
-            ground_plane_height=self.ground_plane_height)
-        poseviz.mayavi_util.set_world_up(self.world_up)
-        self.view_visualizers = [poseviz.components.main_viz.MainViz(
-            self.joint_info, self.joint_info, self.joint_info,
-            self.camera_type, True, self.high_quality, show_field_of_view=self.show_field_of_view)
-            for _ in range(self.n_views)]
+        while True:
+            try:
+                received_info = self.q_posedata.get_nowait() if not self.paused else 'nothing'
+            except queue.Empty:
+                received_info = 'nothing'
 
-        delay = max(10, int(round(1000 / self.fps)))
-
-        @mlab.animate(delay=delay, ui=False)
-        def anim():
-            while True:
-                try:
-                    received_info = self.q_posedata.get_nowait() if not self.paused else 'nothing'
-                except queue.Empty:
-                    received_info = 'nothing'
-
-                if received_info == 'nothing':
-                    if self.current_viewinfos is not None:
-                        self.update_view_camera()
-                    fig.scene.render()
-                    if self.paused:
-                        self.capture_frame()
-                elif received_info == 'new_sequence':
-                    if self.snap_to_cam_on_scene_change:
-                        self.initialized_camera = False
-                        self.current_viewinfos = None
-                    self.q_posedata.task_done()
-                elif received_info == 'stop_visualization':
-                    if self.q_out_video_frames is not None:
-                        self.q_out_video_frames.put('stop_video_writing')
-                    mlab.close(all=True)
-                    self.q_posedata.task_done()
-                    return
-                else:
-                    self.update_visu(received_info)
+            if received_info == 'nothing':
+                if self.current_viewinfos is not None:
                     self.update_view_camera()
+                fig.scene.render()
+                if self.paused:
                     self.capture_frame()
-                    self.q_posedata.task_done()
-                    if self.step_one_by_one:
-                        self.step_one_by_one = False
-                        self.paused = True
-                yield
-
-        _ = anim()
-        mlab.show()
+            elif received_info == 'new_sequence':
+                if self.snap_to_cam_on_scene_change:
+                    self.initialized_camera = False
+                    self.current_viewinfos = None
+                self.q_posedata.task_done()
+            elif received_info == 'stop_visualization':
+                if self.q_out_video_frames is not None:
+                    self.q_out_video_frames.put('stop_video_writing')
+                mlab.close(all=True)
+                self.q_posedata.task_done()
+                return
+            else:
+                self.update_visu(received_info)
+                self.update_view_camera()
+                self.capture_frame()
+                self.q_posedata.task_done()
+                if self.step_one_by_one:
+                    self.step_one_by_one = False
+                    self.paused = True
+            yield
 
     def update_visu(self, view_infos):
         import poseviz.draw2d

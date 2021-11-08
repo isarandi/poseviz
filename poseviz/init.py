@@ -2,13 +2,9 @@ import vtk
 from mayavi import mlab
 from tvtk.api import tvtk
 
-
-def initialize(offscreen=False):
-    mlab.options.offscreen = offscreen
-    global figure
-    fig = mlab.figure('PoseViz', bgcolor=(1, 1, 1), fgcolor=(0, 0, 0), size=(1280, 720))
+def initialize(size=(1280, 720)):
+    fig = mlab.figure('PoseViz', bgcolor=(1, 1, 1), fgcolor=(0, 0, 0), size=size)
     fig.scene.renderer.render_window.set(alpha_bit_planes=1, multi_samples=0, full_screen=False)
-    # fig.scene.renderer.render_window.set_
     fig.scene.renderer.set(
         use_depth_peeling=True, maximum_number_of_peels=5, occlusion_ratio=0.01)
     fig.scene._tool_bar.setVisible(False)

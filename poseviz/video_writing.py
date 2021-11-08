@@ -3,7 +3,7 @@ import os
 
 def main_video_writer(q_out_video_frames):
     import imageio
-    writer_kwargs = dict(codec='h264', ffmpeg_params=['-crf', '18'], macro_block_size=None)
+    writer_kwargs = dict(codec='h264', ffmpeg_params=['-crf', '17'], macro_block_size=None)
     writer = None
 
     while (frame := q_out_video_frames.get()) != 'stop_video_writing':

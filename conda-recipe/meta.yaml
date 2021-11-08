@@ -16,6 +16,7 @@ requirements:
     - mayavi
     - importlib_resources
     - imageio
+    - pyvirtualdisplay
 
 about:
   home: https://github.com/isarandi/poseviz

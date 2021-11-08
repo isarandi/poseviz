@@ -5,7 +5,7 @@ setup(
     version='0.1.0',
     author='István Sárándi',
     author_email='sarandi@vision.rwth-aachen.de',
-    packages=['poseviz'],
+    packages=['poseviz', 'poseviz.components'],
     scripts=[],
     license='LICENSE',
     description='3D human pose visualizer with multi-person, multi-view support, built on Mayavi',

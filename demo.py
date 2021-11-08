@@ -1,6 +1,5 @@
 import poseviz
 import numpy as np
-import poseviz.cameralib
 
 
 def main():
@@ -25,7 +24,7 @@ def main():
             frame=frame,
             boxes=np.array([[10, 20, 100, 100]], np.float32),
             poses=np.array([[[100, 100, 2000], [-100, 100, 2000]]], np.float32),
-            camera=poseviz.cameralib.Camera.from_fov(55, frame.shape[:2]))
+            camera=poseviz.Camera.from_fov(55, frame.shape[:2]))
 
 
 if __name__ == '__main__':

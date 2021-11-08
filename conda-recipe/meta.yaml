@@ -1,0 +1,30 @@
+package:
+  name: poseviz
+  version: 0.1.1
+
+source:
+  path: ..
+
+requirements:
+  run:
+    - python>=3.6
+    - attrdict
+    - more-itertools
+    - transforms3d
+    - opencv
+    - numpy
+    - mayavi
+    - importlib_resources
+    - imageio
+
+about:
+  home: https://github.com/isarandi/poseviz
+  license: GPL-3.0+
+  license_family: GPL
+  license_file: LICENSE
+  summary: '3D Human Pose Visualizer for Python'
+  description: |
+    Multi-person, multi-camera 3D human pose visualization tool built using Mayavi.
+  dev_url: https://github.com/isarandi/poseviz
+  doc_url: https://github.com/isarandi/poseviz
+  doc_source_url: https://github.com/isarandi/poseviz/blob/master/README.md

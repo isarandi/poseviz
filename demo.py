@@ -14,7 +14,7 @@ def main():
     # Iterate over the frames of e.g. a video
     for i in range(1):
         # Get the current frame
-        frame = np.zeros([512, 512, 3], np.uint8)
+        frame = np.zeros([720, 1280, 3], np.uint8)
 
         # Make predictions here
         # ...

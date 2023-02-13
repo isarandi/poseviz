@@ -8,7 +8,7 @@ import poseviz.components.skeletons_viz
 class MainViz:
     def __init__(
             self, joint_info_pred, joint_info_pred2, joint_info_gt, camera_type, show_image,
-            high_quality, show_field_of_view=True):
+            high_quality, show_field_of_view=True, show_camera_wireframe=True):
         if joint_info_pred is not None:
             self.skeletons_pred = poseviz.components.skeletons_viz.SkeletonsViz(
                 joint_info_pred, colors.blue, colors.cyan, colors.yellow, colors.green, 0.06,
@@ -30,9 +30,11 @@ class MainViz:
             self.skeletons_pred2 = None
 
         self.camera_viz = poseviz.components.camera_viz.CameraViz(
-            camera_type, show_image, show_field_of_view)
+            camera_type, show_image, show_field_of_view, show_camera_wireframe)
 
-    def update(self, camera_display, image, pred_poses=None, pred_poses2=None, gt_poses=None):
+    def update(
+            self, camera_display, image, pred_poses=None, pred_poses2=None, gt_poses=None,
+            highlight=False):
         if pred_poses is not None:
             self.skeletons_pred.update(pred_poses)
         if pred_poses2 is not None:
@@ -40,4 +42,4 @@ class MainViz:
         if gt_poses is not None:
             self.skeletons_gt.update(gt_poses)
 
-        self.camera_viz.update(camera_display, image)
+        self.camera_viz.update(camera_display, image, highlight=highlight)

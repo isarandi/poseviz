@@ -19,12 +19,18 @@ CAM_TO_MAYCAM_ROTATION_MAT = np.array([
 
 
 def rotation_mat(up):
-    right = np.array([1, 0, 0])
-    if np.allclose(up, right):
-        right = np.array([0, 1, 0])
+    rightlike = np.array([1, 0, 0])
+    if np.allclose(up, rightlike):
+        rightlike = np.array([0, 1, 0])
 
-    forward = np.cross(up, right)
+    forward = unit_vector(np.cross(up, rightlike))
+    right = np.cross(forward, up)
     return np.row_stack([right, forward, up])
+
+
+def unit_vector(vectors, axis=-1):
+    norm = np.linalg.norm(vectors, axis=axis, keepdims=True)
+    return vectors / norm
 
 
 def world_to_mayavi(points):
@@ -50,17 +56,21 @@ def set_world_up(world_up):
     WORLD_TO_MAYAVI_ROTATION_MAT = rotation_mat(WORLD_UP)
 
 
-def set_view_to_camera(camera, pivot=None, image_size=None, allow_roll=True):
+def set_view_to_camera(
+        camera, pivot=None, image_size=None, view_angle=None, allow_roll=True,
+        camera_view_padding=0.2):
     if pivot is None:
-        pivot = camera.t + camera.R[2] * 500
+        pivot = camera.t + camera.R[2] * 2500
 
     fig = mlab.gcf()
     mayavi_cam = fig.scene.camera
     if image_size is not None:
         half_height = 0.5 * image_size[1]
         offset = np.abs(camera.intrinsic_matrix[1, 2] - half_height)
-        mayavi_cam.view_angle = np.rad2deg(
-            2 * np.arctan(1.2 * (half_height + offset) / camera.intrinsic_matrix[1, 1]))
+        tan = (1 + camera_view_padding) * (half_height + offset) / camera.intrinsic_matrix[1, 1]
+        mayavi_cam.view_angle = np.rad2deg(2 * np.arctan(tan))
+    elif view_angle is not None:
+        mayavi_cam.view_angle = view_angle
 
     mayavi_cam.focal_point = world_to_mayavi(pivot)
     mayavi_cam.position = world_to_mayavi(camera.t)
@@ -72,10 +82,9 @@ def set_view_to_camera(camera, pivot=None, image_size=None, allow_roll=True):
 
 def get_current_view_as_camera():
     azimuth, elevation, distance, focalpoint = mlab.view()
-
     azi = -azimuth - 90
-    elev = elevation - 90
-    total_rotation_mat = transforms3d.euler.euler2mat(azi, elev, 0, 'szxy')
+    elev = -elevation + 90
+    total_rotation_mat = transforms3d.euler.euler2mat(np.deg2rad(azi), np.deg2rad(elev), 0, 'szxy')
     R = WORLD_TO_MAYAVI_ROTATION_MAT.T @ total_rotation_mat @ WORLD_TO_MAYAVI_ROTATION_MAT
     distance = distance * UNIT_TO_MM
     pivot = mayavi_to_world(focalpoint)

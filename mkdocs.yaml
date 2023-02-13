@@ -1,0 +1,16 @@
+site_name: PoseViz
+site_url: https://isarandi.github.io/poseviz
+repo_url: https://github.com/isarandi/poseviz
+site_author: István Sárándi
+theme:
+  name: material
+  palette:
+    primary: indigo
+nav:
+  - Home: 'index.md'
+  - poseviz.PoseViz: 'poseviz.md'
+  - poseviz.Camera: 'camera.md'
+  - poseviz.ViewInfo: 'viewinfo.md'
+plugins:
+  - search
+  - mkdocstrings

@@ -6,7 +6,7 @@ conda install anaconda-client conda-build
 conda build conda-recipe
 
 anaconda login
-anaconda upload .../poseviz-0.1.1-py38_0.tar.bz2
+anaconda upload .../poseviz-0.1.3-py39_0.tar.bz2
 ```
 
 ## References

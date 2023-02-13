@@ -4,11 +4,13 @@ import tvtk.api
 from mayavi import mlab
 
 import poseviz.boxlib
+import poseviz.colors
 import poseviz.mayavi_util
 
 
 class CameraViz:
-    def __init__(self, camera_type, show_image, show_field_of_view=True):
+    def __init__(
+            self, camera_type, show_image, show_field_of_view=True, show_camera_wireframe=True):
         self.viz_im = None
         self.is_initialized = False
         self.prev_cam = None
@@ -16,25 +18,32 @@ class CameraViz:
         self.show_image = show_image
         self.prev_imshape = None
         self.show_field_of_view = show_field_of_view
+        self.show_camera_wireframe = show_camera_wireframe
         self.mesh = None
         self.mesh2 = None
         self.mesh3 = None
+        self.prev_highlight = False
 
-    def initial_update(self, camera, image):
+    def initial_update(self, camera, image, highlight=False):
         image_corners, far_corners = self.calculate_camera_vertices(camera, image.shape)
 
         if self.camera_type != 'original':
             triangles = np.array([[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]])
-            self.mesh = mlab.triangular_mesh(
-                *image_corners.T, triangles, color=(0., 0., 0.), tube_radius=0.02,
-                line_width=1, tube_sides=3, representation='wireframe', reset_zoom=False)
+
+            if self.show_camera_wireframe:
+                self.mesh = mlab.triangular_mesh(
+                    *image_corners.T, triangles,
+                    color=poseviz.colors.cyan if highlight else poseviz.colors.black,
+                    tube_radius=0.04 if highlight else 0.02,
+                    line_width=10 if highlight else 1,
+                    tube_sides=3, representation='wireframe', reset_zoom=False)
 
             if self.show_field_of_view:
                 self.mesh2 = mlab.triangular_mesh(
-                    *far_corners.T, triangles, color=(0., 0., 0.), opacity=0.1,
+                    *far_corners.T, triangles, color=poseviz.colors.black, opacity=0.1,
                     representation='surface', reset_zoom=False)
                 self.mesh3 = mlab.triangular_mesh(
-                    *far_corners.T, triangles, color=(0.5, 0.5, 0.5), opacity=0.1,
+                    *far_corners.T, triangles, color=poseviz.colors.gray, opacity=0.1,
                     tube_radius=0.01, tube_sides=3, representation='wireframe', reset_zoom=False)
 
         if self.show_image:
@@ -44,36 +53,47 @@ class CameraViz:
 
         self.prev_cam = camera
         self.prev_imshape = image.shape
+        self.prev_highlight = highlight
         self.is_initialized = True
 
-    def update(self, camera, image):
+    def update(self, camera, image, highlight=False):
         if not self.is_initialized:
-            return self.initial_update(camera, image)
+            return self.initial_update(camera, image, highlight)
 
-        if self.prev_cam.allclose(camera) and image.shape == self.prev_imshape:
+        if (self.prev_cam.allclose(camera) and
+                image.shape == self.prev_imshape and
+                self.prev_highlight == highlight):
+            # Only the image content has changed
             if self.show_image:
                 self.set_image_content(image)
             return
+        elif self.prev_highlight == highlight:
+            image_corners, far_corners = self.calculate_camera_vertices(camera, image.shape)
+            if self.camera_type != 'original':
+                if self.show_camera_wireframe:
+                    self.mesh.mlab_source.set(
+                        x=image_corners[:, 0], y=image_corners[:, 1], z=image_corners[:, 2])
+                if self.show_field_of_view:
+                    self.mesh2.mlab_source.set(
+                        x=far_corners[:, 0], y=far_corners[:, 1], z=far_corners[:, 2])
+                    self.mesh3.mlab_source.set(
+                        x=far_corners[:, 0], y=far_corners[:, 1], z=far_corners[:, 2])
 
-        image_corners, far_corners = self.calculate_camera_vertices(camera, image.shape)
-        if self.camera_type != 'original':
-            self.mesh.mlab_source.set(
-                x=image_corners[:, 0], y=image_corners[:, 1], z=image_corners[:, 2])
-            if self.show_field_of_view:
-                self.mesh2.mlab_source.set(
-                    x=far_corners[:, 0], y=far_corners[:, 1], z=far_corners[:, 2])
-                self.mesh3.mlab_source.set(
-                    x=far_corners[:, 0], y=far_corners[:, 1], z=far_corners[:, 2])
+            if self.show_image:
+                if image.shape[:2] != self.prev_imshape[:2]:
+                    self.viz_im.remove()
+                    self.new_imshow(image.shape, image_corners)
+                    self.prev_imshape = image.shape
 
-        if self.show_image:
-            if image.shape[:2] != self.prev_imshape[:2]:
-                self.viz_im.remove()
-                self.new_imshow(image.shape, image_corners)
-                self.prev_imshape = image.shape
-
-            self.set_image_content(image)
-            self.set_image_position(image_corners)
-        self.prev_cam = camera
+                self.set_image_content(image)
+                self.set_image_position(image_corners)
+                self.prev_cam = camera
+        else:
+            # We change the highlight state by reinitializing it all
+            for elem in [self.viz_im, self.mesh, self.mesh2, self.mesh3]:
+                if elem is not None:
+                    elem.remove()
+            self.initial_update(camera, image, highlight)
 
     def new_imshow(self, imshape, mayavi_image_corners):
         mayavi_width = np.linalg.norm(mayavi_image_corners[1] - mayavi_image_corners[2])

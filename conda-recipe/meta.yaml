@@ -1,6 +1,6 @@
 package:
   name: poseviz
-  version: 0.1.1
+  version: 0.1.3
 
 source:
   path: ..
@@ -16,7 +16,6 @@ requirements:
     - mayavi
     - importlib_resources
     - imageio
-    - pyvirtualdisplay
 
 about:
   home: https://github.com/isarandi/poseviz

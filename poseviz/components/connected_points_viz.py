@@ -26,8 +26,8 @@ class ConnectedPoints:
         self.coords.clear()
         self.edges.clear()
 
-    def add_points(self, coords, edges, ignore_isolated=True):
-        if ignore_isolated:
+    def add_points(self, coords, edges, show_isolated_points=False):
+        if not show_isolated_points:
             coords, edges = self.get_nonisolated(coords, edges)
         n_points = len(self.coords)
         self.coords.extend(coords)
@@ -71,12 +71,12 @@ class ConnectedPoints:
         self.points = mlab.points3d(
             *c.T, scale_factor=self.scale_factor, color=self.color,
             opacity=self.opacity_points,
-            mode=self.mode, resolution=8 if self.high_quality else 4, scale_mode='vector',
+            mode=self.mode, resolution=16 if self.high_quality else 3, scale_mode='vector',
             reset_zoom=False)
         self.points.mlab_source.dataset.lines = self.edges
         tube = mlab.pipeline.tube(
             self.points, tube_radius=self.scale_factor / 3,
-            tube_sides=6 if self.high_quality else 3)
+            tube_sides=12 if self.high_quality else 3)
         mlab.pipeline.surface(
             tube, color=self.line_color, opacity=self.opacity_lines, reset_zoom=False)
 

@@ -14,8 +14,7 @@ def draw_checkerboard(ground_plane_height):
     size = 20
     extent = [-size, size, -size, size, 0, 0]
     viz_im = mlab.imshow(
-        np.ones(image.shape[:2]), opacity=0.3, extent=extent, reset_zoom=False,
-        interpolate=False)
+        np.ones(image.shape[:2]), opacity=0.3, extent=extent, reset_zoom=False, interpolate=False)
 
     reshaped = image.reshape([-1, 3], order='F')
     colors = tvtk.api.tvtk.UnsignedCharArray()

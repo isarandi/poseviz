@@ -280,13 +280,13 @@ class Camera:
         return build_extrinsic_matrix(self.R, self.t)
 
     @staticmethod
-    def from_fov(fov_degrees, imshape):
+    def from_fov(fov_degrees, imshape, world_up=(0, -1, 0)):
         f = np.max(imshape[:2]) / (np.tan(np.deg2rad(fov_degrees) / 2) * 2)
         intrinsics = np.array(
             [[f, 0, imshape[1] / 2],
              [0, f, imshape[0] / 2],
              [0, 0, 1]], np.float32)
-        return Camera(intrinsic_matrix=intrinsics)
+        return Camera(intrinsic_matrix=intrinsics, world_up=world_up)
 
     def copy(self):
         return copy.deepcopy(self)

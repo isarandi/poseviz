@@ -9,7 +9,7 @@ import multiprocessing as mp
 import numpy as np
 import os
 
-import improc
+import poseviz.draw2d
 import poseviz.colors
 import poseviz.video_writing
 
@@ -168,7 +168,7 @@ class PoseViz:
                 c = v.camera.copy()
                 c.scale_output(1 / d)
                 view_infos[i] = ViewInfo(
-                    improc.resize_by_factor(v.frame, 1 / d),
+                    poseviz.draw2d.resize_by_factor(v.frame, 1 / d),
                     v.boxes / d, v.poses, c, v.poses_true, v.poses_alt)
 
         try:

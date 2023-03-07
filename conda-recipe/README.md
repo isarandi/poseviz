@@ -3,10 +3,10 @@ How to build the conda package
 
 ```bash
 conda install anaconda-client conda-build
-conda build conda-recipe
+conda build conda-recipe -c defaults -c conda-forge -c isarandi
 
 anaconda login
-anaconda upload .../poseviz-0.1.3-py39_0.tar.bz2
+anaconda upload .../poseviz-...tar.bz2
 ```
 
 ## References

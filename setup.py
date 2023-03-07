@@ -8,7 +8,7 @@ except KeyError:
 
 setup(
     name='poseviz',
-    version='0.1.3',
+    version='0.1.4',
     author='István Sárándi',
     author_email='sarandi@vision.rwth-aachen.de',
     packages=['poseviz', 'poseviz.components'],

@@ -2,7 +2,7 @@ import numpy as np
 import transforms3d
 from mayavi import mlab
 
-import poseviz.cameralib
+import cameralib
 
 MM_TO_UNIT = 1 / 1000
 UNIT_TO_MM = 1000
@@ -89,4 +89,4 @@ def get_current_view_as_camera():
     distance = distance * UNIT_TO_MM
     pivot = mayavi_to_world(focalpoint)
     t = pivot - R[2] * distance
-    return poseviz.cameralib.Camera(t, R, np.eye(3), None, WORLD_UP)
+    return cameralib.Camera(t, R, np.eye(3), None, WORLD_UP)

@@ -6,6 +6,11 @@ try:
 except KeyError:
     dependencies_managed_by_conda = False
 
+docs_packages = [
+    'mkdocstrings-python',
+    'mkdocs-material',
+]
+
 setup(
     name='poseviz',
     version='0.1.4',
@@ -24,5 +29,11 @@ setup(
         'opencv-python',
         'numpy',
         'mayavi',
-        'imageio']
+        'imageio',
+        'cameralib @ git+https://github.com/isarandi/cameralib.git',
+    ],
+    extras_require={
+        'dev': docs_packages,
+        'docs': docs_packages,
+    },
 )

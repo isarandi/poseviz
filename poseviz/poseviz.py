@@ -27,8 +27,7 @@ class PoseViz:
             show_camera_wireframe=True, show_field_of_view=True, resolution=(1280, 720),
             use_virtual_display=False, show_virtual_display=True, show_ground_plane=True,
             paused=False, camera_view_padding=0.2):
-        """The main class that creates a visualizer process and can then be used as the interface
-        to update the visualization state.
+        """The main class that creates a visualizer process, and provides an interface to update the visualization state.
         This class supports the Python **context manager** protocol to close the visualization at
         the end.
 
@@ -45,41 +44,47 @@ class PoseViz:
                 recording camera from which the video was  recorded. 'free' means that the
                 view-camera is free to be moved around by the user. 'bird' (  experimental) tries to
                 automatically move to a nice location to be able to see both the person and  the
-                recording camera from a third person perspective.
+                recording camera from a third-person perspective.
             n_views (int): The number of cameras that will be displayed.
-            world_up (3-vector): A 3-vector, the up vector in the world coordinate system in
-            which the poses
-                will be  specified.
+                world_up (3-vector): A 3-vector, the up vector in the world coordinate system in
+                which the poses will be specified.
             ground_plane_height (float): The vertical position of the ground plane in the world
-                coordinate system.
-            downscale (int): Image downscaling factor for display. May speed up the
+                coordinate system, along the up-vector.
+            downscale (int): Image downscaling factor for display, to speed up the
                 visualization.
             viz_fps (int): Target frames-per-second of the visualization. If the updates come
-                faster than  this, the visualizer will block, to ensure that visualization does not
-                happen faster than this FPS. Of course if the speed of updates cannot deliver this
+                faster than  this, the visualizer will block and wait, to ensure that visualization does not
+                happen faster than this FPS. Of course, if the speed of updates do not deliver this
                 fps, the visualization will also be slower.
             queue_size (int): Size of the internal queue used to communicate with the
                 visualizer process.
-            multicolor_detections: Color each box with a different color. Useful when tracking
-                with fixed IDs.
+            draw_detections (bool): Whether to draw detection boxes on the images.
+            multicolor_detections (bool): Whether to color each detection box with a different color.
+                This is useful when tracking people with consistent person IDs, and has no effect
+                if `draw_detections` is False.
             snap_to_cam_on_scene_change (bool): Whether to reinitialize the view camera to the
-                original camera on each change of sequence (call to ```viz.reinit_camera_view()```).
-            high_quality (bool): whether to use high resolution spheres and tubes for the
-                skeletons (it may be faster to set it to False).
-            draw_2d_pose (bool): whether to draw the 2D skeleton on the displayed camera
-            image.
-            show_field_of_view (bool): Whether to visualize an extended pyramid indicating what
-                is part of the field of view of the cameras. Recommended to turn off in multi-camera
-                setups, as the visualization can get crowded otherwise.
+                original camera on each change of sequence (through a call to ```viz.reinit_camera_view()```).
+            high_quality (bool): Whether to use high-resolution spheres and tubes for the
+                skeletons (set to False for better speed).
+            draw_2d_pose (bool): Whether to draw the 2D skeleton on the displayed camera image.
+            show_camera_wireframe (bool): Whether to visualize each camera as a pyramid-like wireframe object.
+            show_field_of_view (bool): Whether to visualize an extended pyramid shape indicating the
+             field of view of the cameras. Recommended to turn off in multi-camera
+                setups, as otherwise the visualization can get crowded.
             resolution ((int, int)): The resolution of the visualization window (width,
                 height) pair.
             use_virtual_display (bool): Whether to use a virtual display for visualization.
-                There may be two reasons to do this. First, to allow higher resolution visualization
-                than the screen resolution. Normally, Mayavi won't allow windows that are larger
-                than the display screen (just automatically "maximizes" the window.). Second,
-                it can be a way to do off-screen rendering.
+                There may be two reasons to do this. First, to allow higher-resolution visualization
+                than the screen resolution. Windows that are larger than the display screen can be
+                difficult to create under certain GUI managers like GNOME. Second, this can be a way to do off-screen rendering.
             show_virtual_display (bool): Whether to show the virtual display or to hide it (
-                off-screen rendering). Has no effect if `use_virtual_display``` is False.
+                off-screen rendering). This has no effect if ```use_virtual_display``` is False.
+            show_ground_plane (bool): Whether to visualize a checkerboard ground plane.
+            paused (bool): Whether to start the visualization in paused state.
+            camera_view_padding (float): When viewing the scence from a visualized camera position,
+                it is often useful to also see beyond the edges of the video frame. The ```cameera_view_padding```
+                value adjusts what fraction of the frame size is applied as padding around it.
+                Example with [```camera_view_padding=0```](/poseviz/images/padding_0.jpg) and [```camera_view_padding=0.2```](/poseviz/images/padding_0.2.jpg)
         """
 
         self.q_posedata = mp.JoinableQueue(queue_size)
@@ -301,13 +306,15 @@ class PoseVizMayaviSide:
             mlab.show()
 
     def animate(self, fig):
+        # The main animation loop of the visualizer
+        # The infinite loop pops an incoming command or frame information from the queue
+        # and processes it. If there's no incoming information, we just render the scene and
+        # continue to iterate.
         from mayavi import mlab
 
         while True:
-            try:
-                received_info = self.q_posedata.get_nowait() if not self.paused else 'nothing'
-            except queue.Empty:
-                received_info = 'nothing'
+            # Get a new command or frame visualization data from the multiprocessing queue
+            received_info = self.receive_info()
 
             if received_info == 'nothing':
                 if self.current_viewinfos is not None:
@@ -331,12 +338,25 @@ class PoseVizMayaviSide:
                 self.update_visu(viewinfos)
                 self.update_view_camera(viz_camera, viz_imshape)
                 self.capture_frame()
-                self.q_posedata.task_done()
+
                 if self.step_one_by_one:
                     self.step_one_by_one = False
                     self.paused = True
 
+                self.q_posedata.task_done()
+
             yield
+
+    def receive_info(self):
+        """Gets a new command or frame visualization data from the multiprocessing queue.
+        Returns 'nothing' if the queue is empty or the visualization is paused."""
+        if self.paused:
+            return 'nothing'
+
+        try:
+            return self.q_posedata.get_nowait()
+        except queue.Empty:
+            return 'nothing'
 
     def update_visu(self, view_infos):
         import poseviz.draw2d

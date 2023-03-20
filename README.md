@@ -16,12 +16,14 @@ in [MeTRAbs](https://github.com/isarandi/metrabs) visualizations.
 
 ```python
 import poseviz
+import cameralib
 
-viz = poseviz.PoseViz(...)
-camera = poseviz.Camera(...)
-for frame in frames:
-    bounding_boxes, poses3d = run_pose_estimation_model(frame)
-    viz.update(frame=frame, boxes=bounding_boxes, poses=poses3d, camera=camera)
+camera = cameralib.Camera(...)
+
+with poseviz.PoseViz(...) as viz:
+    for frame in frames:
+        bounding_boxes, poses3d = run_pose_estimation_model(frame)
+        viz.update(frame=frame, boxes=bounding_boxes, poses=poses3d, camera=camera)
 ```
 
 See also [```demo.py```](demo.py).

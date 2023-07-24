@@ -3,7 +3,7 @@ import transforms3d
 import tvtk.api
 from mayavi import mlab
 
-import poseviz.boxlib
+import boxlib
 import poseviz.colors
 import poseviz.mayavi_util
 
@@ -103,8 +103,8 @@ class CameraViz:
             np.ones(imshape[:2]), opacity=0.6, extent=extent, reset_zoom=False, interpolate=True)
 
     def calculate_camera_vertices(self, camera, imshape):
-        image_corners = poseviz.boxlib.corners(
-            poseviz.boxlib.full_box(imshape=np.array(imshape)))
+        image_corners = boxlib.corners(
+            boxlib.full_box(imshape=np.array(imshape)))
         image_corners_world = camera.image_to_world(image_corners, camera_depth=500)
         points = np.array([camera.t, *image_corners_world])
         mayavi_image_corners = poseviz.mayavi_util.world_to_mayavi(points)

@@ -1,5 +1,5 @@
 import os
-
+import os.path as osp
 
 def main_video_writer(q_out_video_frames):
     import imageio
@@ -20,7 +20,7 @@ def main_video_writer(q_out_video_frames):
             video_path, fps = frame
             if writer is not None:
                 writer.close()
-            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            os.makedirs(osp.dirname(video_path), exist_ok=True)
             writer = imageio.get_writer(video_path, fps=fps, **writer_kwargs)
         elif writer is not None:
             writer.append_data(frame)

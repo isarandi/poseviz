@@ -10,7 +10,6 @@ orange = (1.0, 0.49803921568627452, 0.054901960784313725)
 black = (0., 0., 0.)
 
 
-
 def cycle_over_colors(range_zero_one=False):
     """Returns a generator that cycles over a list of nice colors, indefinitely."""
     colors = ((0.12156862745098039, 0.46666666666666667, 0.70588235294117652),

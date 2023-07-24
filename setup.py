@@ -13,7 +13,7 @@ docs_packages = [
 
 setup(
     name='poseviz',
-    version='0.1.4',
+    version='0.1.6',
     author='István Sárándi',
     author_email='sarandi@vision.rwth-aachen.de',
     packages=['poseviz', 'poseviz.components'],
@@ -31,6 +31,7 @@ setup(
         'mayavi',
         'imageio',
         'cameralib @ git+https://github.com/isarandi/cameralib.git',
+        'boxlib @ git+https://github.com/isarandi/boxlib.git',
     ],
     extras_require={
         'dev': docs_packages,

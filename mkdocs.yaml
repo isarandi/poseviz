@@ -9,7 +9,6 @@ theme:
 nav:
   - Home: 'index.md'
   - poseviz.PoseViz: 'poseviz.md'
-  - poseviz.Camera: 'camera.md'
   - poseviz.ViewInfo: 'viewinfo.md'
 plugins:
   - search

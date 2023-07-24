@@ -1,16 +1,17 @@
+import collections
 import contextlib
 import itertools
+import multiprocessing as mp
+import os
+import os.path as osp
 import pickle
 import queue
 from typing import List
 
-import collections
-import multiprocessing as mp
 import numpy as np
-import os
 
-import poseviz.draw2d
 import poseviz.colors
+import poseviz.draw2d
 import poseviz.video_writing
 
 ViewInfo = collections.namedtuple(
@@ -27,7 +28,8 @@ class PoseViz:
             show_camera_wireframe=True, show_field_of_view=True, resolution=(1280, 720),
             use_virtual_display=False, show_virtual_display=True, show_ground_plane=True,
             paused=False, camera_view_padding=0.2):
-        """The main class that creates a visualizer process, and provides an interface to update the visualization state.
+        """The main class that creates a visualizer process, and provides an interface to update
+        the visualization state.
         This class supports the Python **context manager** protocol to close the visualization at
         the end.
 
@@ -53,21 +55,25 @@ class PoseViz:
             downscale (int): Image downscaling factor for display, to speed up the
                 visualization.
             viz_fps (int): Target frames-per-second of the visualization. If the updates come
-                faster than  this, the visualizer will block and wait, to ensure that visualization does not
+                faster than  this, the visualizer will block and wait, to ensure that
+                visualization does not
                 happen faster than this FPS. Of course, if the speed of updates do not deliver this
                 fps, the visualization will also be slower.
             queue_size (int): Size of the internal queue used to communicate with the
                 visualizer process.
             draw_detections (bool): Whether to draw detection boxes on the images.
-            multicolor_detections (bool): Whether to color each detection box with a different color.
+            multicolor_detections (bool): Whether to color each detection box with a different
+            color.
                 This is useful when tracking people with consistent person IDs, and has no effect
                 if `draw_detections` is False.
             snap_to_cam_on_scene_change (bool): Whether to reinitialize the view camera to the
-                original camera on each change of sequence (through a call to ```viz.reinit_camera_view()```).
+                original camera on each change of sequence (through a call to
+                ```viz.reinit_camera_view()```).
             high_quality (bool): Whether to use high-resolution spheres and tubes for the
                 skeletons (set to False for better speed).
             draw_2d_pose (bool): Whether to draw the 2D skeleton on the displayed camera image.
-            show_camera_wireframe (bool): Whether to visualize each camera as a pyramid-like wireframe object.
+            show_camera_wireframe (bool): Whether to visualize each camera as a pyramid-like
+            wireframe object.
             show_field_of_view (bool): Whether to visualize an extended pyramid shape indicating the
              field of view of the cameras. Recommended to turn off in multi-camera
                 setups, as otherwise the visualization can get crowded.
@@ -76,15 +82,18 @@ class PoseViz:
             use_virtual_display (bool): Whether to use a virtual display for visualization.
                 There may be two reasons to do this. First, to allow higher-resolution visualization
                 than the screen resolution. Windows that are larger than the display screen can be
-                difficult to create under certain GUI managers like GNOME. Second, this can be a way to do off-screen rendering.
+                difficult to create under certain GUI managers like GNOME. Second, this can be a
+                way to do off-screen rendering.
             show_virtual_display (bool): Whether to show the virtual display or to hide it (
                 off-screen rendering). This has no effect if ```use_virtual_display``` is False.
             show_ground_plane (bool): Whether to visualize a checkerboard ground plane.
             paused (bool): Whether to start the visualization in paused state.
             camera_view_padding (float): When viewing the scence from a visualized camera position,
-                it is often useful to also see beyond the edges of the video frame. The ```cameera_view_padding```
+                it is often useful to also see beyond the edges of the video frame. The
+                ```cameera_view_padding```
                 value adjusts what fraction of the frame size is applied as padding around it.
-                Example with [```camera_view_padding=0```](/poseviz/images/padding_0.jpg) and [```camera_view_padding=0.2```](/poseviz/images/padding_0.2.jpg)
+                Example with [```camera_view_padding=0```](/poseviz/images/padding_0.jpg) and [
+                ```camera_view_padding=0.2```](/poseviz/images/padding_0.2.jpg)
         """
 
         self.q_posedata = mp.JoinableQueue(queue_size)
@@ -115,15 +124,21 @@ class PoseViz:
         if resolution[1] > 720:
             input('Move the window to be partially outside the screen, then press Enter...')
             # Spent a lot of time trying to fix this, but it's very tricky and frustrating!
-            # We have to manually drag the window partially off-screen, else it's impossible to set the size
-            # larger than the display resolution! If you try, it will just snap to the image borders (get maximized).
+            # We have to manually drag the window partially off-screen, else it's impossible to
+            # set the size
+            # larger than the display resolution! If you try, it will just snap to the image
+            # borders (get maximized).
             # An alternative would be like https://unix.stackexchange.com/a/680848/291533, ie
-            # we can take the window away from the window manager and then freely set its size and position.
-            # The downside is that we are no longer able to move the window with the mouse and it is stuck in the foreground.
+            # we can take the window away from the window manager and then freely set its size
+            # and position.
+            # The downside is that we are no longer able to move the window with the mouse and it
+            # is stuck in the foreground.
             # So here we rather go the manual route.
             # Further info:
-            # https://www.reddit.com/r/kde/comments/mzza4d/programmatically_moving_windows_off_the_screen/
-            # https://unix.stackexchange.com/questions/517396/is-it-possible-to-move-window-out-of-the-screen-border#comment1396167_517396
+            # https://www.reddit.com/r/kde/comments/mzza4d
+            # /programmatically_moving_windows_off_the_screen/
+            # https://unix.stackexchange.com/questions/517396/is-it-possible-to-move-window-out
+            # -of-the-screen-border#comment1396167_517396
             # https://github.com/jordansissel/xdotool/issues/186#issuecomment-470032261
             # Another option is some kind of virtual screen, off-screen rendering etc.
             # But then there are issues with hardware acceleration... It's quite complex.
@@ -170,11 +185,13 @@ class PoseViz:
             for i in range(len(view_infos)):
                 v = view_infos[i]
                 d = self.downscale_main if i == self.main_cam_value.value else self.downscale
-                c = v.camera.copy()
-                c.scale_output(1 / d)
                 view_infos[i] = ViewInfo(
                     poseviz.draw2d.resize_by_factor(v.frame, 1 / d),
-                    v.boxes / d, v.poses, c, v.poses_true, v.poses_alt)
+                    v.boxes / d,
+                    v.poses,
+                    v.camera.scale_output(1 / d, inplace=False),
+                    v.poses_true,
+                    v.poses_alt)
 
         try:
             self.q_posedata.put((view_infos, viz_camera, viz_imshape), block=block)
@@ -206,7 +223,7 @@ class PoseViz:
             self.record.clear()
 
         if new_pickle_path == '':
-            noext, ext = os.path.splitext(new_video_path)
+            noext, ext = osp.splitext(new_video_path)
             self.pickle_path = noext + '.pkl'
         else:
             self.pickle_path = new_pickle_path

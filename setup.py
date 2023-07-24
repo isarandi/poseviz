@@ -13,7 +13,7 @@ docs_packages = [
 
 setup(
     name='poseviz',
-    version='0.1.6',
+    version='0.1.7',
     author='István Sárándi',
     author_email='sarandi@vision.rwth-aachen.de',
     packages=['poseviz', 'poseviz.components'],

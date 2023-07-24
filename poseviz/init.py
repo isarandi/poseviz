@@ -9,6 +9,7 @@ def initialize(size=(1280, 720)):
         use_depth_peeling=True, maximum_number_of_peels=5, occlusion_ratio=0.01)
     fig.scene._tool_bar.setVisible(False)
     fig.scene.interactor.interactor_style = tvtk.InteractorStyleTerrain()
+    # Suppress warning outputs that have no effect on the visualization.
     output = vtk.vtkFileOutputWindow()
     output.SetFileName('/dev/null')
     vtk.vtkOutputWindow().SetInstance(output)

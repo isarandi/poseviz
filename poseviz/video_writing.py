@@ -5,7 +5,6 @@ def main_video_writer(q_out_video_frames):
     import imageio
     writer_kwargs = dict(codec='h264', ffmpeg_params=['-crf', '15'], macro_block_size=None)
     writer = None
-
     while True:
         frame = q_out_video_frames.get()
         if isinstance(frame, str) and frame == 'stop_video_writing':

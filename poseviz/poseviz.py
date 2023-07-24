@@ -10,8 +10,8 @@ from typing import List
 
 import numpy as np
 
-import poseviz.colors
 import poseviz.draw2d
+import poseviz.colors
 import poseviz.video_writing
 
 ViewInfo = collections.namedtuple(
@@ -95,9 +95,7 @@ class PoseViz:
                 Example with [```camera_view_padding=0```](/poseviz/images/padding_0.jpg) and [
                 ```camera_view_padding=0.2```](/poseviz/images/padding_0.2.jpg)
         """
-
         self.q_posedata = mp.JoinableQueue(queue_size)
-
         self.q_out_video_frames = mp.JoinableQueue(queue_size)
         self.video_writer_process = mp.Process(
             target=poseviz.video_writing.main_video_writer,
@@ -303,6 +301,7 @@ class PoseVizMayaviSide:
             import poseviz.components.main_viz
             import poseviz.components.ground_plane_viz
             import poseviz.mayavi_util
+
             poseviz.mayavi_util.set_world_up(self.world_up)
             fig = poseviz.init.initialize(size=self.resolution)
             fig.scene.interactor.add_observer('KeyPressEvent', self._on_keypress)
@@ -376,7 +375,6 @@ class PoseVizMayaviSide:
             return 'nothing'
 
     def update_visu(self, view_infos):
-        import poseviz.draw2d
         pose_displayed_view_infos = (
             view_infos if self.pose_displayed_cam_id is None
             else [view_infos[self.pose_displayed_cam_id]])
@@ -535,5 +533,24 @@ def tf_to_numpy(x):
 
 
 def _main_visualize(*args, **kwargs):
+    remove_qt_paths_added_by_opencv()
     viz = PoseVizMayaviSide(*args, **kwargs)
     viz.run_loop()
+
+
+def remove_qt_paths_added_by_opencv():
+    """Remove Qt paths added by OpenCV, which may cause conflicts with Qt as used by Mayavi."""
+    # See also https://forum.qt.io/post/654289
+    import sys
+    # noinspection PyUnresolvedReferences
+    import cv2
+    try:
+        from cv2.version import ci_build, headless
+        ci_and_not_headless = ci_build and not headless
+    except:
+        ci_and_not_headless = False
+
+    if sys.platform.startswith('linux') and ci_and_not_headless:
+        os.environ.pop('QT_QPA_PLATFORM_PLUGIN_PATH')
+    if sys.platform.startswith("linux") and ci_and_not_headless:
+        os.environ.pop('QT_QPA_FONTDIR')

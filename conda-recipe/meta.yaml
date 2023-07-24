@@ -1,6 +1,6 @@
 package:
   name: poseviz
-  version: 0.1.5
+  version: 0.1.7
 
 source:
   path: ..
@@ -18,7 +18,7 @@ requirements:
     - importlib_resources
     - imageio
     - cameralib
-
+    - boxlib
 
 about:
   home: https://github.com/isarandi/poseviz

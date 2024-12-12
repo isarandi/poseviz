@@ -19,6 +19,7 @@ CAM_TO_MAYCAM_ROTATION_MAT = np.array([
 
 
 def rotation_mat(up):
+    up = unit_vector(up)
     rightlike = np.array([1, 0, 0])
     if np.allclose(up, rightlike):
         rightlike = np.array([0, 1, 0])
@@ -86,7 +87,15 @@ def get_current_view_as_camera():
     elev = -elevation + 90
     total_rotation_mat = transforms3d.euler.euler2mat(np.deg2rad(azi), np.deg2rad(elev), 0, 'szxy')
     R = WORLD_TO_MAYAVI_ROTATION_MAT.T @ total_rotation_mat @ WORLD_TO_MAYAVI_ROTATION_MAT
-    distance = distance * UNIT_TO_MM
-    pivot = mayavi_to_world(focalpoint)
-    t = pivot - R[2] * distance
-    return cameralib.Camera(t, R, np.eye(3), None, WORLD_UP)
+
+    fig = mlab.gcf()
+    t = mayavi_to_world(fig.scene.camera.position)
+
+    width, height = fig.scene.get_size()
+    f = height / (np.tan(np.deg2rad(fig.scene.camera.view_angle) / 2) * 2)
+    intrinsics = np.array(
+        [[f, 0, (width - 1) / 2],
+         [0, f, (height - 1) / 2],
+         [0, 0, 1]], np.float32)
+    return cameralib.Camera(
+        intrinsic_matrix=intrinsics, rot_world_to_cam=R, optical_center=t, world_up=WORLD_UP)

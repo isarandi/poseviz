@@ -6,6 +6,7 @@ from mayavi import mlab
 import boxlib
 import poseviz.colors
 import poseviz.mayavi_util
+import mayavi.tools.pipeline
 
 
 class CameraViz:
@@ -32,7 +33,7 @@ class CameraViz:
 
             if self.show_camera_wireframe:
                 self.mesh = mlab.triangular_mesh(
-                    *image_corners.T, triangles,
+                    *image_corners[:5].T, triangles,
                     color=poseviz.colors.cyan if highlight else poseviz.colors.black,
                     tube_radius=0.04 if highlight else 0.02,
                     line_width=10 if highlight else 1,
@@ -68,11 +69,11 @@ class CameraViz:
                 self.set_image_content(image)
             return
         elif self.prev_highlight == highlight:
-            image_corners, far_corners = self.calculate_camera_vertices(camera, image.shape)
+            image_points, far_corners = self.calculate_camera_vertices(camera, image.shape)
             if self.camera_type != 'original':
                 if self.show_camera_wireframe:
                     self.mesh.mlab_source.set(
-                        x=image_corners[:, 0], y=image_corners[:, 1], z=image_corners[:, 2])
+                        x=image_points[:5, 0], y=image_points[:5, 1], z=image_points[:5, 2])
                 if self.show_field_of_view:
                     self.mesh2.mlab_source.set(
                         x=far_corners[:, 0], y=far_corners[:, 1], z=far_corners[:, 2])
@@ -80,13 +81,14 @@ class CameraViz:
                         x=far_corners[:, 0], y=far_corners[:, 1], z=far_corners[:, 2])
 
             if self.show_image:
-                if image.shape[:2] != self.prev_imshape[:2]:
+                if (image.shape[:2] != self.prev_imshape[:2] or
+                        not np.allclose(camera.intrinsic_matrix, self.prev_cam.intrinsic_matrix)):
                     self.viz_im.remove()
-                    self.new_imshow(image.shape, image_corners)
+                    self.new_imshow(image.shape, image_points)
                     self.prev_imshape = image.shape
 
                 self.set_image_content(image)
-                self.set_image_position(image_corners)
+                self.set_image_position(image_points)
                 self.prev_cam = camera
         else:
             # We change the highlight state by reinitializing it all
@@ -95,21 +97,27 @@ class CameraViz:
                     elem.remove()
             self.initial_update(camera, image, highlight)
 
-    def new_imshow(self, imshape, mayavi_image_corners):
-        mayavi_width = np.linalg.norm(mayavi_image_corners[1] - mayavi_image_corners[2])
-        mayavi_height = np.linalg.norm(mayavi_image_corners[2] - mayavi_image_corners[3])
+    def new_imshow(self, imshape, mayavi_image_points):
+        mayavi_width = np.linalg.norm(mayavi_image_points[1] - mayavi_image_points[2])
+        mayavi_height = np.linalg.norm(mayavi_image_points[2] - mayavi_image_points[3])
+        h, w = imshape[:2]
         extent = [0, mayavi_height, 0, mayavi_width, 0, 0]
         self.viz_im = mlab.imshow(
-            np.ones(imshape[:2]), opacity=0.6, extent=extent, reset_zoom=False, interpolate=True)
+            np.ones(imshape[:2]), opacity=0.5, extent=extent, reset_zoom=False, interpolate=True)
 
     def calculate_camera_vertices(self, camera, imshape):
-        image_corners = boxlib.corners(boxlib.full(imshape=np.array(imshape)))
-        image_corners_world = camera.image_to_world(image_corners, camera_depth=500)
-        points = np.array([camera.t, *image_corners_world])
-        mayavi_image_corners = poseviz.mayavi_util.world_to_mayavi(points)
+        h, w = imshape[:2]
+        # image_corners = boxlib.corners(boxlib.full(imshape=np.array(imshape))) - 0.5
+        image_corners = np.array(
+            [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
+        image_center = np.array(imshape[:2][::-1]) / 2
+        image_points = np.concatenate([image_corners, [image_center]], axis=0)
+        image_points_world = camera.image_to_world(image_points, camera_depth=150)
+        points = np.array([camera.t, *image_points_world])
+        mayavi_image_points = poseviz.mayavi_util.world_to_mayavi(points)
         mayavi_far_corners = (
-                mayavi_image_corners[0] + (mayavi_image_corners - mayavi_image_corners[0]) * 20)
-        return mayavi_image_corners, mayavi_far_corners
+                mayavi_image_points[0] + (mayavi_image_points[:5] - mayavi_image_points[0]) * 20)
+        return mayavi_image_points, mayavi_far_corners
 
     def set_image_content(self, image):
         reshaped = image.view().reshape([-1, 3], order='F')
@@ -117,13 +125,20 @@ class CameraViz:
         self.colors.from_array(reshaped)
         self.viz_im.actor.input.point_data.scalars = self.colors
 
-    def set_image_position(self, mayavi_image_corners):
-        down = unit_vector(mayavi_image_corners[4] - mayavi_image_corners[1])
-        right = unit_vector(mayavi_image_corners[2] - mayavi_image_corners[1])
+    def set_image_position(self, mayavi_image_points):
+        down = unit_vector(mayavi_image_points[4] - mayavi_image_points[1])
+        right = unit_vector(mayavi_image_points[2] - mayavi_image_points[1])
         R = np.column_stack([down, right, np.cross(down, right)])
         z, x, y = np.rad2deg(transforms3d.euler.mat2euler(R, 'rzxy'))
         self.viz_im.actor.orientation = [x, y, z]
-        self.viz_im.actor.position = np.mean(mayavi_image_corners[1:], axis=0)
+        self.viz_im.actor.position = mayavi_image_points[5]
+
+    def remove(self):
+        if self.is_initialized:
+            for elem in [self.viz_im, self.mesh, self.mesh2, self.mesh3]:
+                if elem is not None:
+                    elem.remove()
+            self.is_initialized = False
 
 
 def unit_vector(v):

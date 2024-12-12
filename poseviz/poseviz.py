@@ -1,33 +1,30 @@
-import collections
 import contextlib
 import itertools
 import multiprocessing as mp
 import os
-import os.path as osp
-import pickle
 import queue
-from typing import List
+import threading
 
 import numpy as np
-
-import poseviz.draw2d
 import poseviz.colors
+import poseviz.draw2d
 import poseviz.video_writing
-
-ViewInfo = collections.namedtuple(
-    'ViewInfo', ['frame', 'boxes', 'poses', 'camera', 'poses_true', 'poses_alt'],
-    defaults=(None, (), (), None, (), ()))
+import poseviz.view_info
+import simplepyutils as spu
+from poseviz import messages
+from poseviz.view_info import ViewInfo
 
 
 class PoseViz:
     def __init__(
-            self, joint_names, joint_edges, camera_type='free', n_views=1, world_up=(0, -1, 0),
+            self, joint_names=None, joint_edges=None, camera_type='free', n_views=1,
+            world_up=(0, -1, 0),
             ground_plane_height=-1000, downscale=None, downscale_main=None,
             viz_fps=100, queue_size=64, draw_detections=True, multicolor_detections=False,
             snap_to_cam_on_scene_change=True, high_quality=True, draw_2d_pose=False,
             show_camera_wireframe=True, show_field_of_view=True, resolution=(1280, 720),
             use_virtual_display=False, show_virtual_display=True, show_ground_plane=True,
-            paused=False, camera_view_padding=0.2):
+            paused=False, camera_view_padding=0.2, body_model_faces=None, show_image=True):
         """The main class that creates a visualizer process, and provides an interface to update
         the visualization state.
         This class supports the Python **context manager** protocol to close the visualization at
@@ -95,36 +92,39 @@ class PoseViz:
                 Example with [```camera_view_padding=0```](/poseviz/images/padding_0.jpg) and [
                 ```camera_view_padding=0.2```](/poseviz/images/padding_0.2.jpg)
         """
-        self.q_posedata = mp.JoinableQueue(queue_size)
-        self.q_out_video_frames = mp.JoinableQueue(queue_size)
-        self.video_writer_process = mp.Process(
-            target=poseviz.video_writing.main_video_writer,
-            args=(self.q_out_video_frames,))
-        self.video_writer_process.start()
+
+        self.q_messages_pre = queue.Queue(queue_size)
+        if paused:
+            self.pause()
+        self.q_messages_post = mp.JoinableQueue(queue_size)
+
+        self.undistort_pool = spu.ThrottledPool(8)
+        self.posedata_waiter_process = threading.Thread(
+            target=main_posedata_waiter,
+            args=(self.q_messages_pre, self.q_messages_post))
+        self.posedata_waiter_process.start()
 
         self.downscale_main = downscale_main or downscale or (1 if high_quality else 2)
         self.downscale = downscale or 4
-        self.pickle_path = None
-        self.record = []
         self.snap_to_cam_on_scene_change = snap_to_cam_on_scene_change
         self.main_cam_value = mp.Value('i', 0)
 
         self.visualizer_process = mp.Process(
             target=_main_visualize, args=(
-                self.q_posedata, self.q_out_video_frames, joint_names, joint_edges, camera_type,
-                n_views, world_up, ground_plane_height, viz_fps, draw_detections,
+                self.q_messages_post, joint_names, joint_edges,
+                camera_type, n_views, world_up, ground_plane_height, viz_fps, draw_detections,
                 multicolor_detections, snap_to_cam_on_scene_change, high_quality, draw_2d_pose,
                 show_camera_wireframe, show_field_of_view, resolution, use_virtual_display,
-                show_virtual_display, show_ground_plane, self.main_cam_value, paused,
-                camera_view_padding))
+                show_virtual_display, show_ground_plane, self.main_cam_value,
+                camera_view_padding, body_model_faces, show_image))
         self.visualizer_process.start()
 
-        if resolution[1] > 720:
+        if resolution[1] > 1080:
             input('Move the window to be partially outside the screen, then press Enter...')
             # Spent a lot of time trying to fix this, but it's very tricky and frustrating!
             # We have to manually drag the window partially off-screen, else it's impossible to
             # set the size
-            # larger than the display resolution! If you try, it will just snap to the image
+            # larger than the display resolution! If you try, it will just snap to the screen
             # borders (get maximized).
             # An alternative would be like https://unix.stackexchange.com/a/680848/291533, ie
             # we can take the window away from the window manager and then freely set its size
@@ -144,8 +144,9 @@ class PoseViz:
                       f' windowsize {resolution[0]} {resolution[1]}')
 
     def update(
-            self, frame, boxes, poses, camera, poses_true=(), poses_alt=(), viz_camera=None,
-            viz_imshape=None, block=True):
+            self, frame, boxes=(), poses=(), camera=None, poses_true=(), poses_alt=(), vertices=(),
+            vertices_true=(), vertices_alt=(), viz_camera=None,
+            viz_imshape=None, block=True, uncerts=None, uncerts_alt=None):
         """Update the visualization for a new timestep, assuming a single-camera setup.
 
         Args:
@@ -159,11 +160,23 @@ class PoseViz:
               is slower than the update calls. If true, the thread will block (wait). If false,
               the current update call is ignored (frame dropping).
         """
-        viewinfo = ViewInfo(frame, boxes, poses, camera, poses_true, poses_alt)
+        if len(boxes) == 0:
+            boxes = np.zeros((0, 4), np.float32)
+
+        if uncerts is not None:
+            vertices = [np.concatenate([v, uncert[..., np.newaxis]], axis=-1)
+                        for v, uncert in zip(vertices, uncerts)]
+        if uncerts_alt is not None:
+            vertices_alt = [np.concatenate([v, uncert[..., np.newaxis]], axis=-1)
+                            for v, uncert in zip(vertices_alt, uncerts_alt)]
+
+        viewinfo = ViewInfo(
+            frame, boxes, poses, camera, poses_true, poses_alt, vertices, vertices_true,
+            vertices_alt)
         self.update_multiview([viewinfo], viz_camera, viz_imshape, block=block)
 
     def update_multiview(
-            self, view_infos: List[ViewInfo], viz_camera=None, viz_imshape=None, block=True):
+            self, view_infos, viz_camera=None, viz_imshape=None, block=True):
         """Update the visualization for a new timestep, with multi-view data.
 
         Args:
@@ -172,27 +185,17 @@ class PoseViz:
               is slower than the update calls. If true, the thread will block (wait). If false,
               the current update call is ignored (frame dropping).
         """
-        view_infos = list(map(viewinfo_tf_to_numpy, view_infos))
-        if self.pickle_path is not None:
-            recorded_view_infos = [
-                ViewInfo(None, v.boxes, v.poses, v.camera, v.poses_true, v.poses_alt)
-                for v in view_infos]
-            self.record.append(recorded_view_infos)
+        for v in view_infos:
+            v.convert_fields_to_numpy()
 
-        if self.downscale != 1 or self.downscale_main != 1:
-            for i in range(len(view_infos)):
-                v = view_infos[i]
-                d = self.downscale_main if i == self.main_cam_value.value else self.downscale
-                view_infos[i] = ViewInfo(
-                    poseviz.draw2d.resize_by_factor(v.frame, 1 / d),
-                    v.boxes / d,
-                    v.poses,
-                    v.camera.scale_output(1 / d, inplace=False),
-                    v.poses_true,
-                    v.poses_alt)
+        for i in range(len(view_infos)):
+            d = self.downscale_main if i == self.main_cam_value.value else self.downscale
+            view_infos[i] = self.undistort_pool.apply_async(
+                poseviz.view_info.downscale_and_undistort_view_info, (view_infos[i], d))
 
         try:
-            self.q_posedata.put((view_infos, viz_camera, viz_imshape), block=block)
+            self.q_messages_pre.put(messages.UpdateScene(
+                view_infos=view_infos, viz_camera=viz_camera, viz_imshape=viz_imshape), block=block)
         except queue.Full:
             pass
 
@@ -201,9 +204,15 @@ class PoseViz:
         a new sequence is now being visualized, so the view camera may need to be
         reinitialized.
         """
-        self.q_posedata.put('reinit_camera_view')
+        self.q_messages_pre.put(messages.ReinitCameraView())
 
-    def new_sequence_output(self, new_video_path=None, fps=None, new_pickle_path=None):
+    def pause(self):
+        self.q_messages_pre.put(messages.Pause())
+
+    def resume(self):
+        self.q_messages_pre.put(messages.Resume())
+
+    def new_sequence_output(self, new_video_path=None, fps=None, new_camera_trajectory_path=None):
         """Waits until the buffered information is visualized and then starts a new output video
         for the upcoming timesteps.
 
@@ -211,53 +220,44 @@ class PoseViz:
             new_video_path (str): Path where the new video should be generated.
             fps (int): 'frames per second' setting of the new video to be generated
         """
-        if new_video_path is not None:
-            self.q_posedata.join()
-            self.q_out_video_frames.put((new_video_path, fps))
-
-        if self.pickle_path is not None:
-            with open(self.pickle_path, 'wb') as f:
-                pickle.dump(self.record, f)
-            self.record.clear()
-
-        if new_pickle_path == '':
-            noext, ext = osp.splitext(new_video_path)
-            self.pickle_path = noext + '.pkl'
-        else:
-            self.pickle_path = new_pickle_path
+        if new_video_path is not None or new_camera_trajectory_path is not None:
+            self.q_messages_pre.put(
+                messages.StartSequence(
+                    video_path=new_video_path, fps=fps,
+                    camera_trajectory_path=new_camera_trajectory_path))
 
     def finalize_sequence_output(self):
-        self.q_posedata.join()
-        self.q_out_video_frames.put('close_current_video')
-        self.q_out_video_frames.join()
+        self.q_messages_pre.put(messages.EndSequence())
 
     def close(self):
         """Closes the visualization process and window.
         """
-        self.q_posedata.put('stop_visualization')  # close mayavi
+        self.q_messages_pre.put(messages.Quit())
         self._join()
 
     def __enter__(self):
+        self.undistort_pool.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self.undistort_pool.__exit__(exc_type, exc_val, exc_tb)
         self.close()
 
     def _join(self):
-        self.q_posedata.join()
-        self.q_out_video_frames.join()
+        self.q_messages_pre.join()
+        self.q_messages_post.join()
 
 
 class PoseVizMayaviSide:
     def __init__(
-            self, q_posedata, q_out_video_frames, joint_names, joint_edges, camera_type, n_views,
+            self, q_messages, joint_names, joint_edges, camera_type, n_views,
             world_up, ground_plane_height, fps, draw_detections, multicolor_detections,
             snap_to_cam_on_scene_change, high_quality, draw_2d_pose, show_camera_wireframe,
             show_field_of_view, resolution, use_virtual_display, show_virtual_display,
-            show_ground_plane, main_cam_value, paused, camera_view_padding):
+            show_ground_plane, main_cam_value, camera_view_padding, body_model_faces, show_image):
 
-        self.q_posedata = q_posedata
-        self.q_out_video_frames = q_out_video_frames
+        self.q_messages = q_messages
+        self.video_writer = poseviz.video_writing.VideoWriter()
 
         self.camera_type = camera_type
         self.joint_info = (joint_names, joint_edges)
@@ -273,7 +273,7 @@ class PoseVizMayaviSide:
         self.ground_plane_height = ground_plane_height
         self.show_ground_plane = show_ground_plane
         self.step_one_by_one = False
-        self.paused = paused
+        self.paused = False
         self.current_viewinfos = None
         self.high_quality = high_quality
         self.draw_2d_pose = draw_2d_pose
@@ -284,6 +284,11 @@ class PoseVizMayaviSide:
         self.show_virtual_display = show_virtual_display
         self.main_cam_value = main_cam_value
         self.camera_view_padding = camera_view_padding
+        self.body_model_faces = body_model_faces
+        self.i_pred_frame = 0
+        self.camera_trajectory = []
+        self.camera_trajectory_path = None
+        self.show_image = show_image
 
     def run_loop(self):
         if self.use_virtual_display:
@@ -303,16 +308,17 @@ class PoseVizMayaviSide:
             import poseviz.mayavi_util
 
             poseviz.mayavi_util.set_world_up(self.world_up)
-            fig = poseviz.init.initialize(size=self.resolution)
+            fig = poseviz.init.initialize(self.resolution)
             fig.scene.interactor.add_observer('KeyPressEvent', self._on_keypress)
             if self.show_ground_plane:
                 poseviz.components.ground_plane_viz.draw_checkerboard(
                     ground_plane_height=self.ground_plane_height)
             self.view_visualizers = [poseviz.components.main_viz.MainViz(
                 self.joint_info, self.joint_info, self.joint_info, self.camera_type,
-                show_image=True, high_quality=self.high_quality,
+                show_image=self.show_image, high_quality=self.high_quality,
                 show_field_of_view=self.show_field_of_view,
-                show_camera_wireframe=self.show_camera_wireframe)
+                show_camera_wireframe=self.show_camera_wireframe,
+                body_model_faces=self.body_model_faces)
                 for _ in range(self.n_views)]
             delay = max(10, int(round(1000 / self.fps)))
 
@@ -329,52 +335,77 @@ class PoseVizMayaviSide:
         from mayavi import mlab
 
         while True:
-            # Get a new command or frame visualization data from the multiprocessing queue
-            received_info = self.receive_info()
-
-            if received_info == 'nothing':
+            # Get a new message (command) from the multiprocessing queue
+            msg = self.receive_message()
+            if isinstance(msg, messages.Nothing):
                 if self.current_viewinfos is not None:
                     self.update_view_camera()
                 fig.scene.render()
                 if self.paused:
                     self.capture_frame()
-            elif received_info == 'reinit_camera_view':
-                if self.snap_to_cam_on_scene_change:
-                    self.initialized_camera = False
-                    self.current_viewinfos = None
-                self.q_posedata.task_done()
-            elif received_info == 'stop_visualization':
-                if self.q_out_video_frames is not None:
-                    self.q_out_video_frames.put('stop_video_writing')
-                mlab.close(all=True)
-                self.q_posedata.task_done()
-                return
-            else:
-                viewinfos, viz_camera, viz_imshape = received_info
-                self.update_visu(viewinfos)
-                self.update_view_camera(viz_camera, viz_imshape)
+                yield
+            elif isinstance(msg, messages.UpdateScene):
+                self.update_visu(msg.view_infos)
+                self.update_view_camera(msg.viz_camera, msg.viz_imshape)
                 self.capture_frame()
 
                 if self.step_one_by_one:
                     self.step_one_by_one = False
                     self.paused = True
 
-                self.q_posedata.task_done()
+                self.i_pred_frame += 1
+                self.q_messages.task_done()
+                yield
+            elif isinstance(msg, messages.ReinitCameraView):
+                if self.snap_to_cam_on_scene_change:
+                    self.initialized_camera = False
+                    self.current_viewinfos = None
+                self.q_messages.task_done()
+            elif isinstance(msg, messages.StartSequence):
+                if msg.video_path is not None:
+                    self.video_writer.start_sequence(video_path=msg.video_path, fps=msg.fps)
+                self.camera_trajectory_path = msg.camera_trajectory_path
+                self.i_pred_frame = 0
 
-            yield
+                # os.system('/usr/bin/xdotool search --name ^PoseViz$'
+                #          f' windowsize --sync {msg.resolution[0]} {msg.resolution[1]}')
+                self.q_messages.task_done()
+                # yield
+            elif isinstance(msg, messages.Pause):
+                self.paused = True
+                self.q_messages.task_done()
+            elif isinstance(msg, messages.Resume):
+                self.paused = False
+                self.q_messages.task_done()
+            elif isinstance(msg, messages.EndSequence):
+                if self.camera_trajectory_path is not None:
+                    spu.dump_pickle(self.camera_trajectory, self.camera_trajectory_path)
+                self.video_writer.end_sequence()
+                self.q_messages.task_done()
+            elif isinstance(msg, messages.Quit):
+                if self.camera_trajectory_path is not None:
+                    spu.dump_pickle(self.camera_trajectory, self.camera_trajectory_path)
+                mlab.close(all=True)
+                self.video_writer.finish()
+                self.q_messages.task_done()
+                return
+            else:
+                raise ValueError('Unknown message:', msg)
 
-    def receive_info(self):
+    def receive_message(self):
         """Gets a new command or frame visualization data from the multiprocessing queue.
-        Returns 'nothing' if the queue is empty or the visualization is paused."""
+        Returns NOTHING if the queue is empty or the visualization is paused."""
         if self.paused:
-            return 'nothing'
+            return messages.Nothing()
 
         try:
-            return self.q_posedata.get_nowait()
+            return self.q_messages.get_nowait()
         except queue.Empty:
-            return 'nothing'
+            return messages.Nothing()
 
     def update_visu(self, view_infos):
+        self.update_num_views(len(view_infos))  # Update the number of views if necessary
+
         pose_displayed_view_infos = (
             view_infos if self.pose_displayed_cam_id is None
             else [view_infos[self.pose_displayed_cam_id]])
@@ -382,6 +413,9 @@ class PoseVizMayaviSide:
         all_poses = [p for v in pose_displayed_view_infos for p in v.poses]
         all_poses_true = [p for v in pose_displayed_view_infos for p in v.poses_true]
         all_poses_alt = [p for v in pose_displayed_view_infos for p in v.poses_alt]
+        all_vertices = [p for v in pose_displayed_view_infos for p in v.vertices]
+        all_vertices_true = [p for v in pose_displayed_view_infos for p in v.vertices_true]
+        all_vertices_alt = [p for v in pose_displayed_view_infos for p in v.vertices_alt]
 
         self.current_viewinfos = view_infos
 
@@ -396,8 +430,11 @@ class PoseVizMayaviSide:
                     poseviz.draw2d.draw_box(view_info.frame, box, color, thickness=2)
 
             poses = all_poses if viz is self.view_visualizers[0] else None
-            poses_alt = all_poses_alt if viz is self.view_visualizers[0] else None
             poses_true = all_poses_true if viz is self.view_visualizers[0] else None
+            poses_alt = all_poses_alt if viz is self.view_visualizers[0] else None
+            vertices = all_vertices if viz is self.view_visualizers[0] else None
+            vertices_true = all_vertices_true if viz is self.view_visualizers[0] else None
+            vertices_alt = all_vertices_alt if viz is self.view_visualizers[0] else None
             max_size = np.max(view_info.frame.shape[:2])
             if max_size < 512:
                 thickness = 1
@@ -407,8 +444,8 @@ class PoseVizMayaviSide:
                 thickness = 3
 
             if self.draw_2d_pose:
-                pose_groups = [view_info.poses, view_info.poses_alt, view_info.poses_true]
-                colors = [poseviz.colors.green, poseviz.colors.orange, poseviz.colors.red]
+                pose_groups = [view_info.poses, view_info.poses_true, view_info.poses_alt]
+                colors = [poseviz.colors.green, poseviz.colors.red, poseviz.colors.orange]
                 for poses, color in zip(pose_groups, colors):
                     for pose in poses:
                         pose2d = view_info.camera.world_to_image(pose)
@@ -416,8 +453,26 @@ class PoseVizMayaviSide:
                             view_info.frame, pose2d, joint_edges, thickness, color=color)
 
             viz.update(
-                view_info.camera, view_info.frame, poses, poses_alt, poses_true,
+                view_info.camera, view_info.frame, poses, poses_true, poses_alt,
+                vertices, vertices_true, vertices_alt,
                 highlight=self.pose_displayed_cam_id == i_viz)
+
+    def update_num_views(self, new_n_views):
+        if new_n_views > self.n_views:
+            self.view_visualizers += [
+                poseviz.components.main_viz.MainViz(
+                    self.joint_info, self.joint_info, self.joint_info, self.camera_type,
+                    show_image=True, high_quality=self.high_quality,
+                    show_field_of_view=self.show_field_of_view,
+                    show_camera_wireframe=self.show_camera_wireframe,
+                    body_model_faces=self.body_model_faces)
+                for _ in range(new_n_views - self.n_views)]
+            self.n_views = new_n_views
+        elif new_n_views < self.n_views:
+            for viz in self.view_visualizers[new_n_views:]:
+                viz.remove()
+            del self.view_visualizers[new_n_views:]
+            self.n_views = new_n_views
 
     def update_view_camera(self, camera=None, imshape=None):
         import poseviz.mayavi_util
@@ -428,7 +483,7 @@ class PoseVizMayaviSide:
                 imshape = main_view_info.frame.shape
             poseviz.mayavi_util.set_view_to_camera(
                 camera, image_size=(imshape[1], imshape[0]), allow_roll=True,
-                camera_view_padding=self.camera_view_padding)
+                camera_view_padding=0)
         elif self.camera_type == 'original' or (
                 self.camera_type == 'free' and not self.initialized_camera):
             poseviz.mayavi_util.set_view_to_camera(
@@ -449,8 +504,21 @@ class PoseVizMayaviSide:
 
     def capture_frame(self):
         from mayavi import mlab
-        if self.q_out_video_frames is not None:
-            out_frame = mlab.screenshot(antialiased=True)
+
+        if self.camera_trajectory_path is not None:
+            from poseviz.mayavi_util import get_current_view_as_camera
+            viz_cam = get_current_view_as_camera()
+            self.camera_trajectory.append((self.i_pred_frame, viz_cam))
+
+        if self.video_writer.is_active():
+            out_frame = mlab.screenshot(antialiased=False)
+            # fig = mlab.gcf()
+            # fig.scene.disable_render = True
+            # fig.scene.off_screen_rendering = True
+            # mlab.savefig(self.temp_image_path, size=self.resolution)
+            # fig.scene.off_screen_rendering = False
+            # fig.scene.disable_render = False
+            # out_frame = imageio.imread(self.temp_image_path)
             # factor = 1 / 3
             # if self.camera_type != 'original' and False:
             #     image = main_view_info.frame
@@ -459,7 +527,7 @@ class PoseVizMayaviSide:
             #         image = poseviz.draw2d.draw_stick_figure_2d(
             #             image, main_view_info.camera.world_to_image(pred), self.joint_info, 3)
             #     out_frame[:illust.shape[0], :illust.shape[1]] = illust
-            self.q_out_video_frames.put(out_frame)
+            self.video_writer.append_data(out_frame)
 
     def _on_keypress(self, obj, ev):
         key = obj.GetKeySym()
@@ -508,6 +576,10 @@ class PoseVizMayaviSide:
         elif key == 'u':
             # Show just the main cam pred
             self.pose_displayed_cam_id = self.main_cam
+        elif key == 'z':
+            # Show just the main cam pred
+            self.camera_type = 'original' if self.camera_type != 'original' else 'free'
+            self.initialized_camera = False
         else:
             try:
                 self.main_cam = max(0, min(int(key) - 1, self.n_views - 1))
@@ -517,25 +589,21 @@ class PoseVizMayaviSide:
                 pass
 
 
-def viewinfo_tf_to_numpy(v: ViewInfo):
-    return ViewInfo._make(map(tf_to_numpy, v))
-
-
-def tf_to_numpy(x):
-    try:
-        import tensorflow as tf
-    except ImportError:
-        return x
-
-    if isinstance(x, (tf.Tensor, tf.RaggedTensor, tf.SparseTensor)):
-        return x.numpy()
-    return x
-
-
 def _main_visualize(*args, **kwargs):
     remove_qt_paths_added_by_opencv()
+    monkey_patched_numpy_types()
     viz = PoseVizMayaviSide(*args, **kwargs)
     viz.run_loop()
+
+
+def monkey_patched_numpy_types():
+    """VTK tries to import np.bool etc which are not available anymore."""
+    for name in ['bool', 'int', 'float', 'complex', 'object', 'str']:
+        if name not in dir(np):
+            setattr(np, name, getattr(np, name + '_'))
+
+    # if 'unicode' not in dir(np):
+    #    sys.modules['numpy.unicode'] = np.str_
 
 
 def remove_qt_paths_added_by_opencv():
@@ -552,5 +620,16 @@ def remove_qt_paths_added_by_opencv():
 
     if sys.platform.startswith('linux') and ci_and_not_headless:
         os.environ.pop('QT_QPA_PLATFORM_PLUGIN_PATH')
-    if sys.platform.startswith("linux") and ci_and_not_headless:
         os.environ.pop('QT_QPA_FONTDIR')
+
+
+def main_posedata_waiter(q_posedata_pre, q_posedata_post):
+    while True:
+        msg = q_posedata_pre.get()
+        if isinstance(msg, messages.UpdateScene):
+            msg.view_infos = [v.get() for v in msg.view_infos]
+
+        q_posedata_post.put(msg)
+        q_posedata_pre.task_done()
+        if isinstance(msg, messages.Quit):
+            return

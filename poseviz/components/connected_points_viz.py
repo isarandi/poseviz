@@ -74,11 +74,11 @@ class ConnectedPoints:
             mode=self.mode, resolution=16 if self.high_quality else 3, scale_mode='vector',
             reset_zoom=False)
         self.points.mlab_source.dataset.lines = self.edges
-        tube = mlab.pipeline.tube(
-            self.points, tube_radius=self.scale_factor / 3,
+        self.tube = mlab.pipeline.tube(
+            self.points, tube_radius=self.scale_factor / 5,
             tube_sides=12 if self.high_quality else 3)
         mlab.pipeline.surface(
-            tube, color=self.line_color, opacity=self.opacity_lines, reset_zoom=False)
+            self.tube, color=self.line_color, opacity=self.opacity_lines, reset_zoom=False)
 
         # for i, (point, name, color) in enumerate(
         #         zip(c, self.point_names, colors.cycle_over_colors())):
@@ -86,3 +86,14 @@ class ConnectedPoints:
         #         *point, f'{i}', scale=0.02, color=color))
 
         self.is_initialized = True
+
+    def remove(self):
+        if self.is_initialized:
+            self.points.remove()
+            self.tube.remove()
+            for component in self.point_name_components:
+                component.remove()
+            self.is_initialized = False
+            self.clear()
+            self.point_name_components.clear()
+            self.n_rendered_points = 0

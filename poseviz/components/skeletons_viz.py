@@ -4,8 +4,8 @@ import poseviz.mayavi_util
 
 class SkeletonsViz:
     def __init__(self, joint_info, left_color, mid_color, right_color, point_color, scale_factor,
-                 high_quality=False):
-        opacity = 0.7
+                 high_quality=False, opacity=0.7):
+
         joint_names, joint_edges = joint_info
         edge_colors = dict(left=left_color, mid=mid_color, right=right_color)
         sides = ('left', 'mid', 'right')
@@ -62,3 +62,7 @@ class SkeletonsViz:
                     coords[self.indices_per_side[side]], self.edges_within_side[side],
                     show_isolated_points=True)
             pointset.update()
+
+    def remove(self):
+        for pointset in self.pointsets.values():
+            pointset.remove()

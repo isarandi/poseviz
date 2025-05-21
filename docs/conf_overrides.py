@@ -1,0 +1,1 @@
+autoapi_own_page_level = 'class'

@@ -16,9 +16,9 @@ in [MeTRAbs](https://github.com/isarandi/metrabs) visualizations.
 
 ```python
 import poseviz
-import cameralib
+import cameravision
 
-camera = cameralib.Camera(...)
+camera = cameravision.Camera(...)
 
 with poseviz.PoseViz(...) as viz:
     for frame in frames:

@@ -1,0 +1,39 @@
+[build-system]
+requires = [
+    "setuptools>=61",
+    "wheel",
+    "setuptools_scm[toml]>=8"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poseviz"
+dynamic = ["version"]
+description = "3D human pose visualizer with multi-person, multi-view support, built on Mayavi."
+authors = [
+    { name = "István Sárándi", email = "istvan.sarandi@uni-tuebingen.de" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+
+dependencies = [
+    'more-itertools',
+    'opencv-python',
+    'numpy',
+    'mayavi',
+    'imageio',
+    'cameravision',
+    'boxlib',
+    'framepump',
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 99
+skip-string-normalization = true

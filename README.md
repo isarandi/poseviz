@@ -37,18 +37,11 @@ new scene information via multiprocessing queues.
 
 ## Installation
 
-PoseViz is released as a conda package (experimental, tested only on Linux):
-
-```bash
-conda install poseviz -c isarandi
-```
-
-Alternatively, in case the above doesn't work, install Mayavi via conda (the Mayavi pip package has
-compilation problems), clone this repo and install PoseViz via pip:
+PoseViz is available on PyPI. However, in my experience it is better to install the Mayavi dependency through conda instead of pip.
 
 ```bash
 conda install mayavi -c conda-forge
-pip install git+https://github.com/isarandi/poseviz.git
+pip install poseviz
 ```
 
 Then run [demo.py](demo.py) to test if installation was successful.

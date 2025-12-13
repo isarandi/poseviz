@@ -308,6 +308,10 @@ class PoseViz(AbstractContextManager):
               the current update call is ignored (frame dropping).
         """
 
+        # Check if we can enqueue before doing any work (non-blocking mode)
+        if not block and self.q_messages_pre.full():
+            return
+
         for i in range(len(view_infos)):
             if len(view_infos[i].boxes) == 0:
                 view_infos[i].boxes = np.zeros((0, 4), np.float32)
@@ -331,15 +335,12 @@ class PoseViz(AbstractContextManager):
                 view_infos[i] = self.undistort_pool.apply_async(lambda x: x, (view_infos[i],))
         self.ring_index = (self.ring_index + 1) % self.ringbuffer_size
 
-        try:
-            self.q_messages_pre.put(
-                messages.UpdateScene(
-                    view_infos=view_infos, viz_camera=viz_camera, viz_imshape=viz_imshape
-                ),
-                block=block,
-            )
-        except queue.Full:
-            pass
+        self.q_messages_pre.put(
+            messages.UpdateScene(
+                view_infos=view_infos, viz_camera=viz_camera, viz_imshape=viz_imshape
+            ),
+            block=True,  # Always block here since we checked above
+        )
 
     def reinit_camera_view(self):
         """Waits until the current sequence has finished visualizing, then notifies PoseViz that

@@ -18,6 +18,7 @@ class MainViz:
         show_field_of_view=True,
         show_camera_wireframe=True,
         body_model_faces=None,
+        image_plane_distance=1000,
     ):
 
         if joint_info_pred[0] is not None:
@@ -81,7 +82,7 @@ class MainViz:
             self.meshes_pred2 = None
 
         self.camera_viz = poseviz.components.camera_viz.CameraViz(
-            camera_type, show_image, show_field_of_view, show_camera_wireframe
+            camera_type, show_image, show_field_of_view, show_camera_wireframe, image_plane_distance
         )
 
     def update(

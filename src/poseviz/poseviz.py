@@ -60,6 +60,7 @@ class PoseViz(AbstractContextManager):
         camera_view_padding=0.2,
         body_model_faces=None,
         show_image=True,
+        image_plane_distance=1000,
         out_video_path=None,
         out_fps=None,
         audio_path=None,
@@ -198,6 +199,7 @@ class PoseViz(AbstractContextManager):
                 camera_view_padding,
                 body_model_faces,
                 show_image,
+                image_plane_distance,
                 self.raw_arrays,
             ),
             daemon=True,
@@ -438,6 +440,7 @@ class PoseVizMayaviSide:
         camera_view_padding,
         body_model_faces,
         show_image,
+        image_plane_distance,
         raw_arrays,
     ):
         self.q_messages = q_messages
@@ -473,6 +476,7 @@ class PoseVizMayaviSide:
         self.camera_trajectory = []
         self.camera_trajectory_path = None
         self.show_image = show_image
+        self.image_plane_distance = image_plane_distance
         self.raw_arrays = raw_arrays
 
     def run_loop(self):
@@ -512,6 +516,7 @@ class PoseVizMayaviSide:
                     show_field_of_view=self.show_field_of_view,
                     show_camera_wireframe=self.show_camera_wireframe,
                     body_model_faces=self.body_model_faces,
+                    image_plane_distance=self.image_plane_distance,
                 )
                 for _ in range(self.n_views)
             ]
@@ -685,6 +690,7 @@ class PoseVizMayaviSide:
                     show_field_of_view=self.show_field_of_view,
                     show_camera_wireframe=self.show_camera_wireframe,
                     body_model_faces=self.body_model_faces,
+                    image_plane_distance=self.image_plane_distance,
                 )
                 for _ in range(new_n_views - self.n_views)
             ]

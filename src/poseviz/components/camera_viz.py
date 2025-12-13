@@ -8,7 +8,12 @@ import poseviz.mayavi_util
 
 class CameraViz:
     def __init__(
-        self, camera_type, show_image, show_field_of_view=True, show_camera_wireframe=True
+        self,
+        camera_type,
+        show_image,
+        show_field_of_view=True,
+        show_camera_wireframe=True,
+        image_plane_distance=1000,
     ):
         self.viz_im = None
         self.is_initialized = False
@@ -18,6 +23,7 @@ class CameraViz:
         self.prev_imshape = None
         self.show_field_of_view = show_field_of_view
         self.show_camera_wireframe = show_camera_wireframe
+        self.image_plane_distance = image_plane_distance
         self.mesh = None
         self.mesh2 = None
         self.mesh3 = None
@@ -130,7 +136,7 @@ class CameraViz:
         image_corners = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
         image_center = np.array(imshape[:2][::-1]) / 2
         image_points = np.concatenate([image_corners, [image_center]], axis=0)
-        image_points_world = camera.image_to_world(image_points, camera_depth=150)
+        image_points_world = camera.image_to_world(image_points, camera_depth=self.image_plane_distance)
         points = np.array([camera.t, *image_points_world])
         mayavi_image_points = poseviz.mayavi_util.world_to_mayavi(points)
         mayavi_far_corners = (

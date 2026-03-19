@@ -1,4 +1,4 @@
-# PoseViz – 3D Human Pose Visualizer
+# PoseViz – 3D Human Pose and Mesh Visualizer
 
 <p align="center">
   <img src=screenshot.jpg width="30%">
@@ -6,9 +6,8 @@
   <img src=screenshot_multicam.jpg width="30%">
 </p>
 
-Multi-person, multi-camera 3D human pose visualization tool built using
-[Mayavi](https://docs.enthought.com/mayavi/mayavi/). As used
-in [MeTRAbs](https://github.com/isarandi/metrabs) visualizations.
+Multi-person, multi-camera 3D human pose and mesh visualization tool built using
+OpenGL (via ModernGL). As used in [NLF](https://github.com/isarandi/nlf) and [MeTRAbs](https://github.com/isarandi/metrabs) visualizations.
 
 **This repo does not contain pose estimation code, only the visualization part.**
 
@@ -16,9 +15,9 @@ in [MeTRAbs](https://github.com/isarandi/metrabs) visualizations.
 
 ```python
 import poseviz
-import cameravision
+import deltacamera
 
-camera = cameravision.Camera(...)
+camera = deltacamera.Camera(...)
 
 with poseviz.PoseViz(...) as viz:
     for frame in frames:
@@ -37,10 +36,7 @@ new scene information via multiprocessing queues.
 
 ## Installation
 
-PoseViz is available on PyPI. However, in my experience it is better to install the Mayavi dependency through conda instead of pip.
-
 ```bash
-conda install mayavi -c conda-forge
 pip install poseviz
 ```
 

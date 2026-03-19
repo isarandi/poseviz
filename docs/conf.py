@@ -37,9 +37,9 @@ bibtex_bibfiles = ['abbrev_long.bib', 'references.bib']
 bibtex_footbibliography_header = ".. rubric:: References"
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3', None),
-    'torch': ('https://pytorch.org/docs/main/', None),
     'numpy': ('https://numpy.org/doc/stable/', None),
-    'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
+    'deltacamera': ('https://deltacamera.readthedocs.io/', None),
+    'framepump': ('https://framepump.readthedocs.io/', None),
 }
 
 github_username = 'isarandi'

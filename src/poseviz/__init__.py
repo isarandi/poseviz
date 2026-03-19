@@ -2,3 +2,5 @@
 
 from poseviz.poseviz import PoseViz
 from poseviz.view_info import ViewInfo
+
+__all__ = ["PoseViz", "ViewInfo"]

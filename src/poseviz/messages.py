@@ -1,25 +1,26 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
 class UpdateScene:
-    view_infos: any
-    viz_camera: any
-    viz_imshape: any
+    view_infos: list = field(default_factory=list)
+    viz_camera: object = None
+    viz_imshape: Optional[tuple] = None
 
 
 @dataclass
 class AppendFrame:
-    frame: any
+    frame: object = None
 
 
 @dataclass
 class StartSequence:
-    video_path: any =None
-    fps: any = 30
-    resolution: any = None
-    camera_trajectory_path: any = None
-    audio_source_path: any = None
+    video_path: Optional[str] = None
+    fps: int = 30
+    resolution: Optional[tuple] = None
+    camera_trajectory_path: Optional[str] = None
+    audio_source_path: Optional[str] = None
 
 
 class EndSequence:
@@ -48,4 +49,4 @@ class Nothing:
 
 @dataclass
 class NewRingBuffers:
-    ringbuffers: any
+    ringbuffers: list = field(default_factory=list)

@@ -13,7 +13,10 @@ def line(im, p1, p2, *args, **kwargs):
 def draw_stick_figure_2d_inplace(im, coords, joint_edges, thickness=3, color=None):
     for i_joint1, i_joint2 in joint_edges:
         relevant_coords = coords[[i_joint1, i_joint2]]
-        if not np.isnan(relevant_coords).any() and not np.isclose(0, relevant_coords).any():
+        if (
+            not np.isnan(relevant_coords).any()
+            and not np.isclose(0, relevant_coords).any()
+        ):
             line(
                 im,
                 coords[i_joint1],
@@ -41,7 +44,6 @@ def resize_by_factor(im, factor, interp=None, dst=None):
     if interp is None:
         interp = cv2.INTER_LINEAR if factor > 1.0 else cv2.INTER_AREA
     return cv2.resize(im, new_size, fx=factor, fy=factor, interpolation=interp, dst=dst)
-
 
 
 def resize(im, dst, interp=None):

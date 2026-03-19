@@ -9,23 +9,26 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "poseviz"
 dynamic = ["version"]
-description = "3D human pose visualizer with multi-person, multi-view support, built on Mayavi."
+description = "3D human pose visualizer with multi-person, multi-view support."
 authors = [
     { name = "István Sárándi", email = "istvan.sarandi@uni-tuebingen.de" }
 ]
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 
 dependencies = [
     'more-itertools',
     'opencv-python',
     'numpy',
-    'mayavi',
+    'moderngl',
+    'glfw',
     'imageio',
-    'cameravision',
-    'boxlib',
+    'deltacamera',
     'framepump',
+    'simplepyutils',
+    'rlemasklib',
+    'numba',
 ]
 
 [tool.setuptools]
@@ -33,6 +36,9 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"poseviz.gl.shaders" = ["*.vert", "*.frag", "*.geom"]
 
 [tool.black]
 line-length = 99

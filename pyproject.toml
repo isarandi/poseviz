@@ -24,7 +24,7 @@ dependencies = [
     'moderngl',
     'glfw',
     'imageio',
-    'deltacamera',
+    'deltacamera>=0.7.0',
     'framepump',
     'simplepyutils',
     'rlemasklib',

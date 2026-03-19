@@ -86,7 +86,7 @@ def gpu_downscale_and_undistort(view_info, downscale_factor):
     new_h = round(h / downscale_factor)
     new_w = round(w / downscale_factor)
 
-    gpu_cam = dpt.Camera.from_cpu(view_info.camera, device=frame.device)
+    gpu_cam = dpt.Camera.from_numpy(view_info.camera, device=frame.device)
     new_cam = gpu_cam.image_resized((new_h, new_w))
     if gpu_cam.has_distortion():
         new_cam = new_cam.undistorted()

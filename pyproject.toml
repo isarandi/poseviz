@@ -40,6 +40,11 @@ where = ["src"]
 [tool.setuptools.package-data]
 "poseviz.gl.shaders" = ["*.vert", "*.frag", "*.geom"]
 
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+version_file = "src/poseviz/_version.py"
+
 [tool.black]
 line-length = 99
 skip-string-normalization = true

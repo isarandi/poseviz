@@ -330,25 +330,22 @@ class PoseVizGLSide:
 
         width, height = self.resolution
 
-        # Initialize GLFW with invisible window (needed for GL context)
-        if not glfw.init():
-            raise RuntimeError("Failed to initialize GLFW")
+        # Get a GL context: an invisible GLFW window if a display server is available,
+        # otherwise a standalone EGL context (no display server needed)
+        self.window = None
+        if glfw.init():
+            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+            glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+            glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+            self.window = glfw.create_window(width, height, "PoseViz Headless", None, None)
 
-        glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-        glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
-
-        self.window = glfw.create_window(width, height, "PoseViz Headless", None, None)
-        if not self.window:
-            glfw.terminate()
-            raise RuntimeError("Failed to create GLFW window")
-
-        glfw.make_context_current(self.window)
-
-        # Create moderngl context from the GLFW window
-        self.ctx = moderngl.create_context()
+        if self.window is not None:
+            glfw.make_context_current(self.window)
+            self.ctx = moderngl.create_context()
+        else:
+            self.ctx = moderngl.create_context(standalone=True, backend='egl')
 
         # Resolve render_resolution: None means match display resolution
         if self.render_resolution is None:

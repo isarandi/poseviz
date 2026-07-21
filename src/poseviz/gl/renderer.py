@@ -555,6 +555,7 @@ class PoseVizGLSide:
         elif isinstance(msg, messages.UpdateScene):
             self.update_visu(msg.view_infos)
             self.update_view_camera(msg.viz_camera, msg.viz_imshape)
+            self._record_camera_trajectory()
             self.capture_frame()
 
             if self.step_one_by_one:
@@ -583,6 +584,7 @@ class PoseVizGLSide:
                     **({} if is_gl else dict(gpu=True)),
                 )
             self.camera_trajectory_path = msg.camera_trajectory_path
+            self.camera_trajectory = []
             self.i_pred_frame = 0
             return False
 
@@ -595,14 +597,12 @@ class PoseVizGLSide:
             return False
 
         elif isinstance(msg, messages.EndSequence):
-            if self.camera_trajectory_path is not None:
-                spu.dump_pickle(self.camera_trajectory, self.camera_trajectory_path)
+            self._dump_camera_trajectory()
             self.video_writer.end_sequence()
             return False
 
         elif isinstance(msg, messages.Quit):
-            if self.camera_trajectory_path is not None:
-                spu.dump_pickle(self.camera_trajectory, self.camera_trajectory_path)
+            self._dump_camera_trajectory()
             self.video_writer.close()
             self.current_viewinfos = None
             # Drain any remaining messages to release CUDA IPC tensor references
@@ -617,7 +617,24 @@ class PoseVizGLSide:
         else:
             raise ValueError("Unknown message:", msg)
 
+    def _record_camera_trajectory(self):
+        """Record the effective view camera of the current frame, if requested."""
+        if self.camera_trajectory_path is None:
+            return
+        imshape = self.current_imshape
+        if imshape is None:
+            imshape = (self.resolution[1], self.resolution[0])
+        if self._use_terrain_camera():
+            cam = self.terrain_camera.to_deltacamera(imshape)
+        else:
+            cam = self.current_camera
+        self.camera_trajectory.append((self.i_pred_frame, cam))
 
+    def _dump_camera_trajectory(self):
+        if self.camera_trajectory_path is not None:
+            spu.dump_pickle(self.camera_trajectory, self.camera_trajectory_path)
+            self.camera_trajectory_path = None
+            self.camera_trajectory = []
 
     def update_visu(self, view_infos):
         import time

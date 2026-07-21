@@ -16,7 +16,30 @@ _D2D = 3  # cudaMemcpyDeviceToDevice
 def _get_cudart():
     global _cudart
     if _cudart is None:
-        _cudart = ctypes.CDLL("libcudart.so")
+        # Pip-installed CUDA (nvidia-cuda-runtime-cu12 etc.) ships only
+        # versioned libs like libcudart.so.12, with no unversioned symlink
+        # and no LD_LIBRARY_PATH entry. The versioned soname usually
+        # resolves anyway because torch has already loaded it into the
+        # process; otherwise fall back to the nvidia pip package directory.
+        for name in ("libcudart.so", "libcudart.so.13", "libcudart.so.12", "libcudart.so.11"):
+            try:
+                _cudart = ctypes.CDLL(name)
+                break
+            except OSError:
+                continue
+        if _cudart is None:
+            try:
+                import os
+                import nvidia.cuda_runtime
+                lib_dir = os.path.join(os.path.dirname(nvidia.cuda_runtime.__file__), "lib")
+                for f in sorted(os.listdir(lib_dir), reverse=True):
+                    if f.startswith("libcudart.so"):
+                        _cudart = ctypes.CDLL(os.path.join(lib_dir, f))
+                        break
+            except (ImportError, OSError):
+                pass
+        if _cudart is None:
+            raise OSError("Could not find libcudart.so")
     return _cudart
 
 

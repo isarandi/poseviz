@@ -1,4 +1,5 @@
 import ctypes
+import dataclasses
 import logging
 import multiprocessing as mp
 import os
@@ -95,7 +96,10 @@ class PoseViz(AbstractContextManager):
                 recording camera from a third-person perspective.
             n_views (int): Initial number of camera views to allocate. The actual count
                 adjusts dynamically based on how many ViewInfos are passed to
-                ``update_multiview``.
+                ``update_multiview``. Shared-memory frame buffers are only allocated
+                for the initial count; frames of views beyond it are transferred
+                through the message queue, which is slower, so pass the maximum
+                expected view count here for best performance.
             world_up (3-vector): The up vector in the world coordinate system in
                 which the poses will be specified.
             ground_plane_height (float): The vertical position of the ground plane in the world
@@ -182,6 +186,7 @@ class PoseViz(AbstractContextManager):
 
         self.gpu_frames = gpu_frames
         self._closed = False
+        self._warned_extra_views = False
         queue_size_post = 6
         queue_size_waiter = queue_size
         self.q_messages_pre = queue.Queue(queue_size_waiter)
@@ -304,7 +309,7 @@ class PoseViz(AbstractContextManager):
               is slower than the update calls. If true, the thread will block (wait). If false,
               the current update call is ignored (frame dropping).
         """
-        if len(boxes) == 0:
+        if boxes is None or len(boxes) == 0:
             boxes = np.zeros((0, 4), np.float32)
 
         if uncerts is not None:
@@ -349,12 +354,24 @@ class PoseViz(AbstractContextManager):
               the current update call is ignored (frame dropping).
         """
 
+        if len(view_infos) == 0:
+            raise ValueError("view_infos must not be empty.")
+
         # Check if we can enqueue before doing any work (non-blocking mode)
         if not block and self.q_messages_pre.full():
             return
 
+        # Shallow-copy the container and each ViewInfo: the pipeline replaces
+        # fields (frame, boxes, camera), which must not mutate the caller's data.
+        view_infos = [dataclasses.replace(v) for v in view_infos]
+
         for i in range(len(view_infos)):
-            if len(view_infos[i].boxes) == 0:
+            if view_infos[i].frame is not None and view_infos[i].camera is None:
+                raise ValueError(
+                    f"View {i} has a frame but no camera. A camera is required to "
+                    f"display a video frame."
+                )
+            if view_infos[i].boxes is None or len(view_infos[i].boxes) == 0:
                 view_infos[i].boxes = np.zeros((0, 4), np.float32)
 
             d = (
@@ -375,20 +392,36 @@ class PoseViz(AbstractContextManager):
                         np.array(view_infos[i].frame.shape[:2], np.float32) / d
                     )
                     n_pixels = new_imshape[0] * new_imshape[1]
-                    max_pixels = self.frame_rings[i].max_elems // 3
-                    if n_pixels > max_pixels:
-                        raise ValueError(
-                            f'Downscaled frame ({new_imshape[1]}x{new_imshape[0]} = '
-                            f'{n_pixels} pixels) exceeds max_pixels_per_frame '
-                            f'({max_pixels}). Pass a larger max_pixels_per_frame to '
-                            f'PoseViz or increase the downscale factor.'
+                    if i < len(self.frame_rings):
+                        max_pixels = self.frame_rings[i].max_elems // 3
+                        if n_pixels > max_pixels:
+                            raise ValueError(
+                                f'Downscaled frame ({new_imshape[1]}x{new_imshape[0]} = '
+                                f'{n_pixels} pixels) exceeds max_pixels_per_frame '
+                                f'({max_pixels}). Pass a larger max_pixels_per_frame to '
+                                f'PoseViz or increase the downscale factor.'
+                            )
+                        dst = self.frame_rings[i].get_slot(
+                            self.ring_index, (new_imshape[0], new_imshape[1], 3)
                         )
-                    dst = self.frame_rings[i].get_slot(
-                        self.ring_index, (new_imshape[0], new_imshape[1], 3)
-                    )
+                        ring_index = self.ring_index
+                    else:
+                        # Views beyond the preallocated ring buffers: fall back to
+                        # sending the frame through the queue (slower, but works).
+                        if not self._warned_extra_views:
+                            logger.warning(
+                                f"More views ({len(view_infos)}) than preallocated "
+                                f"ring buffers ({len(self.frame_rings)}); extra views "
+                                f"are sent without shared memory, which is slower. "
+                                f"Pass a larger n_views to PoseViz for best "
+                                f"performance."
+                            )
+                            self._warned_extra_views = True
+                        dst = np.empty((new_imshape[0], new_imshape[1], 3), np.uint8)
+                        ring_index = None
                     view_infos[i] = self.undistort_pool.apply_async(
                         poseviz.view_info.downscale_and_undistort_view_info,
-                        (view_infos[i], dst, self.ring_index),
+                        (view_infos[i], dst, ring_index),
                     )
                 else:
                     view_infos[i] = self.undistort_pool.apply_async(

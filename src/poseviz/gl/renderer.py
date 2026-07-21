@@ -655,6 +655,9 @@ class PoseVizGLSide:
         import time
         _tv0 = time.perf_counter()
 
+        if len(view_infos) == 0:
+            return
+
         self.update_num_views(len(view_infos))
 
         # Reconstruct frames from shared memory (CPU path) or keep as CUDA tensor (GPU path)
@@ -708,37 +711,42 @@ class PoseVizGLSide:
             # 2D overlays only work on numpy frames (CPU path)
             is_numpy_frame = isinstance(view_info.frame, np.ndarray)
 
-            max_size = max(view_info.frame.shape[:2])
-            if max_size < 512:
-                thickness = 1
-            elif max_size < 1024:
-                thickness = 2
-            else:
-                thickness = 3
+            if view_info.frame is not None:
+                max_size = max(view_info.frame.shape[:2])
+                if max_size < 512:
+                    thickness = 1
+                elif max_size < 1024:
+                    thickness = 2
+                else:
+                    thickness = 3
 
-            if is_numpy_frame and self.draw_detections:
-                for color, box in zip(box_colors, view_info.boxes):
-                    poseviz.draw2d.draw_box(
-                        view_info.frame, box, color, thickness=thickness
-                    )
-
-            if is_numpy_frame and self.draw_2d_pose:
-                pose_groups = [
-                    view_info.poses,
-                    view_info.poses_true,
-                    view_info.poses_alt,
-                ]
-                colors = [
-                    poseviz.colors.green,
-                    poseviz.colors.red,
-                    poseviz.colors.orange,
-                ]
-                for pose_group, color in zip(pose_groups, colors):
-                    for pose in pose_group:
-                        pose2d = view_info.camera.world_to_image(pose)
-                        poseviz.draw2d.draw_stick_figure_2d_inplace(
-                            view_info.frame, pose2d, joint_edges, thickness, color=color
+                if is_numpy_frame and self.draw_detections:
+                    for color, box in zip(box_colors, view_info.boxes):
+                        poseviz.draw2d.draw_box(
+                            view_info.frame, box, color, thickness=thickness
                         )
+
+                if is_numpy_frame and self.draw_2d_pose:
+                    pose_groups = [
+                        view_info.poses,
+                        view_info.poses_true,
+                        view_info.poses_alt,
+                    ]
+                    colors = [
+                        poseviz.colors.green,
+                        poseviz.colors.red,
+                        poseviz.colors.orange,
+                    ]
+                    for pose_group, color in zip(pose_groups, colors):
+                        for pose in pose_group:
+                            pose2d = view_info.camera.world_to_image(pose)
+                            poseviz.draw2d.draw_stick_figure_2d_inplace(
+                                view_info.frame,
+                                pose2d,
+                                joint_edges,
+                                thickness,
+                                color=color,
+                            )
 
             _tv2 = time.perf_counter()
 
@@ -756,18 +764,28 @@ class PoseVizGLSide:
 
             _tv3 = time.perf_counter()
 
+            frame_shape = (
+                view_info.frame.shape
+                if view_info.frame is not None
+                else getattr(view_info.camera, "image_shape", None)
+            )
+
             # Update picker pyramid for this camera
-            if self.pyramid_picker is not None:
+            if (
+                self.pyramid_picker is not None
+                and view_info.camera is not None
+                and frame_shape is not None
+            ):
                 self.pyramid_picker.update_camera(
                     i_viz,
                     view_info.camera,
-                    view_info.frame.shape,
+                    frame_shape,
                     self.image_plane_distance,
                 )
 
             # Release frame data, keep only shape (for update_view_camera).
             # Essential for CUDA IPC tensors: tells PyTorch the receiver is done.
-            view_info.frame_shape = view_info.frame.shape
+            view_info.frame_shape = frame_shape
             view_info.frame = None
 
         _tv4 = time.perf_counter()
@@ -803,10 +821,14 @@ class PoseVizGLSide:
             self.n_views = new_n_views
 
     def update_view_camera(self, camera=None, imshape=None):
-        main_view_info = self.current_viewinfos[self.main_cam]
+        if not self.current_viewinfos and camera is None:
+            return
+        main_view_info = (
+            self.current_viewinfos[self.main_cam] if self.current_viewinfos else None
+        )
 
         if camera is not None:
-            if imshape is None:
+            if imshape is None and main_view_info is not None:
                 imshape = main_view_info.frame_shape
             self.current_camera = camera
             self.current_imshape = imshape
@@ -853,12 +875,12 @@ class PoseVizGLSide:
     def _init_terrain_camera(self, cam=None):
         """Initialize terrain camera state from a reference camera."""
         if cam is None:
-            if self.current_viewinfos is None:
+            if not self.current_viewinfos:
                 return
             cam = self.current_viewinfos[self.main_cam].camera
 
-        self.terrain_camera.init_from_camera(
-            cam, getattr(self, 'current_imshape', None))
+        if cam is not None:
+            self.terrain_camera.init_from_camera(cam, self.current_imshape)
 
     def _rebuild_viewports(self):
         """Rebuild viewport list based on current mode and resolution."""

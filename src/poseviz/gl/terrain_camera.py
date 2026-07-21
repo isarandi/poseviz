@@ -63,15 +63,20 @@ class TerrainCamera:
         self._max_history = 50
         self._pending_checkpoint = None  # Snapped position waiting to be committed
 
-    def init_from_camera(self, cam):
+    def init_from_camera(self, cam, imshape=None):
         """Initialize from a deltacamera.Camera, placing pivot in front of it.
 
         Args:
             cam: deltacamera.Camera object
+            imshape: (height, width) of the camera's image; when given, the
+                view FOV is matched to the camera's actual FOV instead of the
+                default (otherwise wide-FOV cameras look zoomed in).
         """
         # Pivot is some distance in front of camera (where skeleton likely is)
         self.pivot = cam.t + cam.R[2] * 2500
         self.distance = 2500.0
+        if imshape is not None:
+            self.fov = float(np.clip(cam.get_fov(imshape), 10.0, 120.0))
 
         # Extract azimuth and elevation from camera forward direction
         forward = cam.R[2]

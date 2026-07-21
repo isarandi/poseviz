@@ -782,7 +782,8 @@ class PoseVizGLSide:
                 return
             cam = self.current_viewinfos[self.main_cam].camera
 
-        self.terrain_camera.init_from_camera(cam)
+        self.terrain_camera.init_from_camera(
+            cam, getattr(self, 'current_imshape', None))
 
     def _rebuild_viewports(self):
         """Rebuild viewport list based on current mode and resolution."""

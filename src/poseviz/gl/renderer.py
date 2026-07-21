@@ -9,7 +9,7 @@ import framepump
 
 from poseviz import messages
 from poseviz.gl.window import create_window
-from poseviz.gl.transforms import set_world_up, camera_to_gl_mvp, camera_to_gl_view
+from poseviz.gl.transforms import camera_to_gl_mvp, camera_to_gl_view
 from poseviz.gl.renderables.base import ShaderRenderable
 from poseviz.gl.view_visualizer import ViewVisualizer
 from poseviz.gl.renderables import GroundPlaneRenderable
@@ -122,7 +122,7 @@ class PoseVizGLSide:
         self.current_imshape = None
 
         # Terrain camera for free-fly navigation
-        self.terrain_camera = TerrainCamera(flying_mode=flying_mode)
+        self.terrain_camera = TerrainCamera(flying_mode=flying_mode, world_up=world_up)
 
         # Mouse interaction state
         self.mouse_start_pos = None
@@ -152,8 +152,6 @@ class PoseVizGLSide:
         self._push_after_terrain_init = False
 
     def run_loop(self):
-        set_world_up(self.world_up)
-
         if self.headless:
             self._run_loop_headless()
         else:
@@ -473,7 +471,7 @@ class PoseVizGLSide:
         # Ground plane
         if self.show_ground_plane:
             self.ground_renderer = GroundPlaneRenderable(
-                self.ctx, self.ground_plane_height
+                self.ctx, self.ground_plane_height, world_up=self.world_up
             )
 
         # Camera picker for click selection

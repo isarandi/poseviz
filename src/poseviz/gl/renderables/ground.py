@@ -3,12 +3,15 @@ import moderngl
 
 from poseviz.gl.renderables.base import ShaderRenderable
 from poseviz.gl.renderables.mixins import TextureMixin
+from poseviz.gl.transforms import up_basis
 
 
 class GroundPlaneRenderable(ShaderRenderable, TextureMixin):
     """Renders a checkerboard ground plane."""
 
-    def __init__(self, ctx: moderngl.Context, ground_plane_height: float):
+    def __init__(
+        self, ctx: moderngl.Context, ground_plane_height: float, world_up=(0, -1, 0)
+    ):
         super().__init__(ctx)
         self._load_program("textured")
 
@@ -20,16 +23,20 @@ class GroundPlaneRenderable(ShaderRenderable, TextureMixin):
         self._update_texture(image)
         self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
 
-        # Ground plane quad
+        # Ground plane quad, perpendicular to the world up vector, positioned at
+        # ground_plane_height along it
         size = 20000.0
-        y = -ground_plane_height
+        b1, b2, up = up_basis(world_up)
+        center = ground_plane_height * up
+        corners = [
+            center - size * b1 - size * b2,
+            center + size * b1 - size * b2,
+            center + size * b1 + size * b2,
+            center - size * b1 + size * b2,
+        ]
+        texcoords = [(0, 0), (1, 0), (1, 1), (0, 1)]
         vertices = np.array(
-            [
-                [-size, y, -size, 0, 0],
-                [size, y, -size, 1, 0],
-                [size, y, size, 1, 1],
-                [-size, y, size, 0, 1],
-            ],
+            [[*corner, *uv] for corner, uv in zip(corners, texcoords)],
             dtype=np.float32,
         )
         indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)

@@ -25,56 +25,37 @@ coordinates to a normalized cube where visible points have coordinates in
 
 **Screen coordinates**: Pixel positions after the viewport transform.
 
-World to GL
------------
+The world up vector
+-------------------
 
-The ``world_to_gl`` function rotates and scales world coordinates to GL
-coordinates. It applies a rotation matrix (based on ``world_up``) and
-converts millimeters to GL units (1 GL unit = 1000 mm).
+All geometry is rendered directly in world coordinates (millimeters); there is
+no global re-orientation of the scene. Instead, the ``world_up`` parameter
+determines everything that has a notion of "up":
 
-The rotation matrix is built from the world's up vector. Given ``world_up``,
-it constructs a right-forward-up frame and returns the matrix whose rows are
-the right, forward, and up axes::
+- The **terrain camera** (interactive orbit/pan/fly navigation) builds an
+  orthonormal basis from ``world_up`` via ``up_basis``; azimuth and elevation
+  are spherical coordinates in that basis, so orbiting always revolves around
+  the world's vertical axis.
+- The **ground plane** is placed perpendicular to ``world_up``, at
+  ``ground_plane_height`` along it.
+- The view cameras created by the terrain camera use ``world_up`` for their
+  roll orientation (via deltacamera's ``turned_towards``).
+
+The basis construction from the up vector::
 
     forward = normalize(cross(up, rightlike))
     right = cross(forward, up)
-    world_to_gl = [right, forward, up]
 
-For the common ``world_up`` values:
-
-``world_up=(0, -1, 0)`` (Y-down, standard in computer vision)::
-
-    world_to_gl = [[ 1,  0,  0],
-                   [ 0,  0,  1],
-                   [ 0, -1,  0]]
-
-This maps world-X to GL-X, world-Z to GL-Y, and world-(-Y) to GL-Z.
-
-``world_up=(0, 1, 0)`` (Y-up)::
-
-    world_to_gl = [[ 1,  0,  0],
-                   [ 0,  0, -1],
-                   [ 0,  1,  0]]
-
-``world_up=(0, 0, 1)`` (Z-up, common in robotics)::
-
-    world_to_gl = [[ 1,  0,  0],
-                   [ 0,  1,  0],
-                   [ 0,  0,  1]]
-
-This is identity — Z-up worlds already match GL conventions.
-
-The rotation is computed once at startup based on the ``world_up`` parameter
-and applied to all geometry before rendering.
+For the default ``world_up=(0, -1, 0)`` (Y-down, standard in computer vision)
+this yields ``right=(1, 0, 0)`` and ``forward=(0, 0, 1)``.
 
 View and projection matrices
 -----------------------------
 
 When rendering from a specific camera (e.g., the ``original`` camera mode or
 the image quad placement), PoseViz uses the camera's own intrinsics and
-extrinsics to build the MVP matrix directly. This path does **not** use the
-``world_to_gl`` rotation — it builds a standard view matrix from the camera's
-R and t, and a projection matrix from its intrinsic matrix K.
+extrinsics to build the MVP matrix directly — a standard view matrix from the
+camera's R and t, and a projection matrix from its intrinsic matrix K.
 
 The view matrix transforms world coordinates to camera coordinates::
 

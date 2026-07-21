@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
 import deltacamera
-from poseviz.gl.transforms import camera_to_gl_mvp, camera_to_gl_view
+from poseviz.gl.transforms import camera_to_gl_mvp, camera_to_gl_view, up_basis
 
 
 @dataclass
@@ -34,18 +34,24 @@ class TerrainCamera:
     - Fly: move pivot in camera direction (WASD-style)
     """
 
-    def __init__(self, flying_mode: str = "camera"):
+    def __init__(self, flying_mode: str = "camera", world_up=(0, -1, 0)):
         """Initialize terrain camera.
 
         Args:
             flying_mode: "camera" for true 3D flying, "horizontal" for horizontal-only movement
+            world_up: The up vector of the world coordinate system.
         """
         self.pivot = np.array([0.0, 0.0, 2500.0], dtype=np.float32)
-        self.azimuth = 0.0  # Horizontal angle around Y axis
+        self.azimuth = 0.0  # Horizontal angle around the up axis
         self.elevation = 0.0  # Vertical angle (0 = horizontal, positive = looking down)
         self.distance = 2500.0  # Distance from pivot
         self.fov = 55.0  # Field of view in degrees
         self.flying_mode = flying_mode
+        self.world_up = tuple(world_up)
+        # Orthonormal basis of the world: azimuth/elevation are spherical
+        # coordinates in this basis (for the default Y-down up vector this is
+        # b1=X, b2=Z, up=(0,-1,0), matching the original hardcoded math).
+        self._b1, self._b2, self._up = up_basis(world_up)
         self.initialized = False
 
         # Snap state: if set, we follow this display camera
@@ -80,21 +86,26 @@ class TerrainCamera:
 
         # Extract azimuth and elevation from camera forward direction
         forward = cam.R[2]
-        self.azimuth = np.arctan2(-forward[0], -forward[2])
-        self.elevation = np.arcsin(np.clip(forward[1], -1, 1))
+        self.azimuth = np.arctan2(-np.dot(forward, self._b1), -np.dot(forward, self._b2))
+        self.elevation = np.arcsin(np.clip(-np.dot(forward, self._up), -1, 1))
+        # Clamp as in orbit(): a straight-up/down camera would make the look
+        # direction parallel to the up vector, degenerating the view basis.
+        self.elevation = np.clip(self.elevation, -np.pi / 2 + 0.1, np.pi / 2 - 0.1)
         self.initialized = True
 
     def get_position(self) -> np.ndarray:
         """Get camera position in world coordinates."""
+        return (self.pivot + self.distance * self._offset_dir()).astype(np.float32)
+
+    def _offset_dir(self) -> np.ndarray:
+        """Unit vector from pivot towards the camera position."""
         cos_el = np.cos(self.elevation)
         sin_el = np.sin(self.elevation)
         cos_az = np.cos(self.azimuth)
         sin_az = np.sin(self.azimuth)
-
-        cam_x = self.pivot[0] + self.distance * sin_az * cos_el
-        cam_y = self.pivot[1] - self.distance * sin_el  # Y is down, so negate
-        cam_z = self.pivot[2] + self.distance * cos_az * cos_el
-        return np.array([cam_x, cam_y, cam_z], dtype=np.float32)
+        return (
+            cos_el * (sin_az * self._b1 + cos_az * self._b2) + sin_el * self._up
+        ).astype(np.float32)
 
     def get_view_proj(self, imshape: tuple = None) -> np.ndarray:
         """Get view-projection matrix.
@@ -105,20 +116,18 @@ class TerrainCamera:
         Returns:
             4x4 view-projection matrix (column-major for OpenGL)
         """
-        cam_pos = self.get_position()
-
         if imshape is None:
             imshape = (720, 1280)  # Default 16:9
 
-        # Create camera and use turn_towards for proper orientation
-        # world_up for deltacamera: Y-down means up is (0, -1, 0)
-        cam = (
-            deltacamera.Camera.from_fov(self.fov, imshape, world_up=(0, -1, 0))
-            .copy(optical_center=cam_pos)
+        return camera_to_gl_mvp(self.to_deltacamera(imshape), imshape)
+
+    def to_deltacamera(self, imshape: tuple) -> "deltacamera.Camera":
+        """Build a deltacamera.Camera matching the current view state."""
+        return (
+            deltacamera.Camera.from_fov(self.fov, imshape, world_up=self.world_up)
+            .copy(optical_center=self.get_position())
             .turned_towards(target_world_point=self.pivot)
         )
-
-        return camera_to_gl_mvp(cam, imshape)
 
     def get_view(self, imshape: tuple = None) -> np.ndarray:
         """Get view matrix (world-to-camera).
@@ -129,18 +138,10 @@ class TerrainCamera:
         Returns:
             4x4 view matrix (column-major for OpenGL)
         """
-        cam_pos = self.get_position()
-
         if imshape is None:
             imshape = (720, 1280)
 
-        cam = (
-            deltacamera.Camera.from_fov(self.fov, imshape, world_up=(0, -1, 0))
-            .copy(optical_center=cam_pos)
-            .turned_towards(target_world_point=self.pivot)
-        )
-
-        return camera_to_gl_view(cam)
+        return camera_to_gl_view(self.to_deltacamera(imshape))
 
     # --- Drag interaction (remember from start) ---
 
@@ -180,13 +181,7 @@ class TerrainCamera:
         self.elevation = np.clip(self.elevation, -np.pi / 2 + 0.1, np.pi / 2 - 0.1)
 
         # Recompute pivot so camera stays at its original position
-        cos_el = np.cos(self.elevation)
-        sin_el = np.sin(self.elevation)
-        cos_az = np.cos(self.azimuth)
-        sin_az = np.sin(self.azimuth)
-        offset = self.distance * np.array(
-            [sin_az * cos_el, -sin_el, cos_az * cos_el], dtype=np.float32
-        )
+        offset = self.distance * self._offset_dir()
         self.pivot = self._drag_start_position - offset
 
     def pan(self, dx: float, dy: float, sensitivity: float = None):
@@ -200,11 +195,11 @@ class TerrainCamera:
             sensitivity = self.distance * 0.002
 
         # Right vector (perpendicular to view direction, horizontal)
-        right = np.array(
-            [np.cos(self._drag_start_azimuth), 0, -np.sin(self._drag_start_azimuth)]
+        right = (
+            np.cos(self._drag_start_azimuth) * self._b1
+            - np.sin(self._drag_start_azimuth) * self._b2
         )
-        # Up vector in world (Y is down, so negative Y is up)
-        up = np.array([0, -1, 0])
+        up = self._up
 
         self.pivot = (
             self._drag_start_pivot + right * dx * sensitivity + up * dy * sensitivity
@@ -256,22 +251,11 @@ class TerrainCamera:
         sin_az = np.sin(self.azimuth)
 
         if self.flying_mode == "camera":
-            # Camera-relative: forward includes elevation
-            cos_el = np.cos(self.elevation)
-            sin_el = np.sin(self.elevation)
-
-            # Forward direction toward pivot
-            forward = np.array(
-                [
-                    -sin_az * cos_el,
-                    sin_el,
-                    -cos_az * cos_el,
-                ],
-                dtype=np.float32,
-            )
+            # Camera-relative: forward includes elevation (towards the pivot)
+            forward = -self._offset_dir()
 
             # Right direction (perpendicular, horizontal)
-            right = np.array([-cos_az, 0, sin_az], dtype=np.float32)
+            right = -cos_az * self._b1 + sin_az * self._b2
 
             # Up direction (camera's local up)
             # right cross forward is always up in all right-handed systems
@@ -279,9 +263,9 @@ class TerrainCamera:
             up = up / (np.linalg.norm(up) + 1e-8)
         else:
             # Horizontal mode: forward stays horizontal
-            forward = np.array([-sin_az, 0, -cos_az], dtype=np.float32)
-            right = np.array([-cos_az, 0, sin_az], dtype=np.float32)
-            up = np.array([0, -1, 0], dtype=np.float32)  # Y-down world
+            forward = -(sin_az * self._b1 + cos_az * self._b2)
+            right = -cos_az * self._b1 + sin_az * self._b2
+            up = self._up
 
         if direction == "forward":
             self.pivot += forward * speed

@@ -62,4 +62,6 @@ class Viewport:
             (norm_x, norm_y) in range [0, 1]
         """
         local_x, local_y = self.to_local(screen_x, screen_y)
+        if self.width == 0 or self.height == 0:
+            return (0.0, 0.0)
         return (local_x / self.width, local_y / self.height)

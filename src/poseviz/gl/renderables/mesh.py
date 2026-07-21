@@ -1,3 +1,5 @@
+import logging
+
 import numba
 import numpy as np
 import moderngl
@@ -5,6 +7,8 @@ import moderngl
 from poseviz.gl.renderables.base import ShaderRenderable
 from poseviz.gl.renderables.color_source import ColorSource, UniformColor
 from poseviz.gl.shader_loader import load_program
+
+logger = logging.getLogger(__name__)
 
 
 class MeshRenderable(ShaderRenderable):
@@ -52,8 +56,10 @@ class MeshRenderable(ShaderRenderable):
         self.max_vertices = max_vertices
         self.max_instances = max_instances
         self.vertex_count = 0
+        self.index_count = 0  # Number of indices currently valid in the IBO
         self.n_instances = 0
         self.visible = False
+        self._warned_clamp = False
 
         # Load shader based on color source
         self._load_program(color_source.shader_name)
@@ -85,7 +91,7 @@ class MeshRenderable(ShaderRenderable):
             self._wire_vao = ctx.vertex_array(
                 self._wire_program, [(vbo_positions, "3f", "in_position")], self._ibo
             )
-            self._register_resources(self._wire_program)
+            self._register_resources(self._wire_program, self._wire_vao)
 
     def update(self, vertices, color_data=None):
         """Update mesh vertices and optionally color data.
@@ -116,6 +122,22 @@ class MeshRenderable(ShaderRenderable):
         if n_instances == 0 or n_verts == 0:
             self.visible = False
             return
+
+        # Clamp to the preallocated buffer sizes: an oversized write would
+        # raise a GL error and kill the visualizer process.
+        n_fit = min(self.max_instances, self.max_vertices // n_verts)
+        if n_instances > n_fit:
+            if not self._warned_clamp:
+                logger.warning(
+                    f"Too many mesh instances ({n_instances}); only {n_fit} are "
+                    f"shown. Increase max_instances/max_vertices of MeshRenderable."
+                )
+                self._warned_clamp = True
+            if n_fit == 0:
+                self.visible = False
+                return
+            vertices = vertices[:n_fit]
+            n_instances = n_fit
 
         # Update faces if instance count changed
         if n_instances != self.n_instances or self.n_verts_per_mesh != n_verts:
@@ -154,20 +176,30 @@ class MeshRenderable(ShaderRenderable):
         self.n_verts_per_mesh = n_verts
         combined_faces = self._get_combined_faces(n_instances, n_verts)
         self._ibo.write(combined_faces.astype(np.uint32).tobytes())
+        self.index_count = combined_faces.size
 
     def render(self, view_proj: np.ndarray):
-        if not self.visible:
+        if not self.visible or self.index_count == 0:
             return
 
         self._set_view_proj(view_proj)
         self.color_source.bind(self.program)
-        self.vao.render(moderngl.TRIANGLES)
+
+        # Pass the valid index count explicitly: the IBO is reserved for
+        # max_instances meshes and its unwritten tail must not be drawn.
+        needs_blend = getattr(self.color_source, "needs_blend", False)
+        if needs_blend:
+            self.ctx.enable(moderngl.BLEND)
+            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.vao.render(moderngl.TRIANGLES, vertices=self.index_count)
+        if needs_blend:
+            self.ctx.disable(moderngl.BLEND)
 
         if self.wireframe:
             self.ctx.wireframe = True
             self._wire_program["u_view_proj"].write(view_proj.astype(np.float32).tobytes())
             self._wire_program["u_color"].value = (0.0, 0.0, 0.0)
-            self._wire_vao.render(moderngl.TRIANGLES)
+            self._wire_vao.render(moderngl.TRIANGLES, vertices=self.index_count)
             self.ctx.wireframe = False
 
     def destroy(self):

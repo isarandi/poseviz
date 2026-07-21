@@ -110,6 +110,7 @@ class PoseVizGLSide:
         self.ctx = None
         self.fbo = None  # Offscreen framebuffer (resolved, for video output)
         self.fbo_msaa = None  # Multisampled framebuffer for antialiased rendering
+        self._fbo_attachments = []  # Attachments of the above, kept for release
         self.samples = 4  # MSAA sample count
         self.blit_prog = None  # Shader for blitting FBO to screen with scaling
         self.blit_vao = None
@@ -175,23 +176,7 @@ class PoseVizGLSide:
             self.render_resolution = self.resolution
 
         # FBO at render_resolution (can be larger than window for high-res video output)
-        render_w, render_h = self.render_resolution
-
-        # Create multisampled FBO for antialiased rendering
-        self.fbo_msaa = self.ctx.framebuffer(
-            color_attachments=[
-                self.ctx.renderbuffer((render_w, render_h), 4, samples=self.samples)
-            ],
-            depth_attachment=self.ctx.depth_renderbuffer(
-                (render_w, render_h), samples=self.samples
-            ),
-        )
-
-        # Create resolved FBO with texture (for video encoding and display)
-        self.fbo = self.ctx.framebuffer(
-            color_attachments=[self.ctx.texture((render_w, render_h), 4)],  # RGBA
-            depth_attachment=self.ctx.depth_texture((render_w, render_h)),
-        )
+        self._create_fbos()
 
         # Create blit shader for scaling FBO to screen
         self._init_blit_shader()
@@ -381,23 +366,8 @@ class PoseVizGLSide:
         # Resolve render_resolution: None means match display resolution
         if self.render_resolution is None:
             self.render_resolution = self.resolution
-        render_w, render_h = self.render_resolution
 
-        # Create multisampled FBO for antialiased rendering
-        self.fbo_msaa = self.ctx.framebuffer(
-            color_attachments=[
-                self.ctx.renderbuffer((render_w, render_h), 4, samples=self.samples)
-            ],
-            depth_attachment=self.ctx.depth_renderbuffer(
-                (render_w, render_h), samples=self.samples
-            ),
-        )
-
-        # Create resolved FBO with texture (for zero-copy encoding)
-        self.fbo = self.ctx.framebuffer(
-            color_attachments=[self.ctx.texture((render_w, render_h), 4)],  # RGBA
-            depth_attachment=self.ctx.depth_texture((render_w, render_h)),
-        )
+        self._create_fbos()
         self.fbo_msaa.use()
         self.ctx.enable(moderngl.DEPTH_TEST)
 
@@ -820,6 +790,26 @@ class PoseVizGLSide:
             del self.view_visualizers[new_n_views:]
             self.n_views = new_n_views
 
+            # Clamp all state that refers to camera indices
+            if self.main_cam >= new_n_views:
+                self.main_cam = 0
+                self.main_cam_value.value = 0
+                self.initialized_camera = False
+            if (
+                self.pose_displayed_cam_id is not None
+                and self.pose_displayed_cam_id >= new_n_views
+            ):
+                self.pose_displayed_cam_id = None
+            if self.selected_camera >= new_n_views:
+                self.selected_camera = -1
+            if (
+                self.terrain_camera.snapped_to is not None
+                and self.terrain_camera.snapped_to >= new_n_views
+            ):
+                self.terrain_camera.unsnap()
+            if self.pyramid_picker is not None:
+                self.pyramid_picker.truncate(new_n_views)
+
     def update_view_camera(self, camera=None, imshape=None):
         if not self.current_viewinfos and camera is None:
             return
@@ -1066,6 +1056,23 @@ class PoseVizGLSide:
 
     # --- Input callbacks ---
 
+    def _to_framebuffer_coords(self, x, y):
+        """Convert window (screen) coordinates to framebuffer pixels.
+
+        These differ by the content scale on HiDPI displays, while viewports,
+        pick buffers and self.resolution are all in framebuffer pixels.
+        """
+        win_w, win_h = glfw.get_window_size(self.window)
+        fb_w, fb_h = glfw.get_framebuffer_size(self.window)
+        if win_w > 0 and win_h > 0:
+            x = x * fb_w / win_w
+            y = y * fb_h / win_h
+        return x, y
+
+    def _get_cursor_framebuffer_pos(self, window):
+        x, y = glfw.get_cursor_pos(window)
+        return self._to_framebuffer_coords(x, y)
+
     def _on_key(self, window, key, _scancode, action, _mods):
         # Keys that support repeat for continuous adjustment when held
         if action == glfw.PRESS or action == glfw.REPEAT:
@@ -1180,7 +1187,7 @@ class PoseVizGLSide:
             self.mouse_button_pressed = button
             self.mouse_mods = mods
             self._user_dragging = True
-            x, y = glfw.get_cursor_pos(window)
+            x, y = self._get_cursor_framebuffer_pos(window)
             self.mouse_start_pos = (x, y)
             self.terrain_camera.begin_drag()
             # Track which viewport was clicked for mouse controls
@@ -1188,7 +1195,7 @@ class PoseVizGLSide:
         elif action == glfw.RELEASE:
             # Check if this was a click (not a drag)
             if button == glfw.MOUSE_BUTTON_LEFT and self.mouse_start_pos is not None:
-                x, y = glfw.get_cursor_pos(window)
+                x, y = self._get_cursor_framebuffer_pos(window)
                 dx = abs(x - self.mouse_start_pos[0])
                 dy = abs(y - self.mouse_start_pos[1])
 
@@ -1204,6 +1211,7 @@ class PoseVizGLSide:
     def _on_mouse_move(self, window, x, y):
         if self.mouse_start_pos is None:
             return
+        x, y = self._to_framebuffer_coords(x, y)
         # Only apply camera controls if drag started in interactive viewport
         if (
             self.mouse_start_viewport is None
@@ -1225,7 +1233,7 @@ class PoseVizGLSide:
 
     def _on_scroll(self, window, _xoffset, yoffset):
         # Only apply scroll zoom if cursor is over interactive viewport
-        x, y = glfw.get_cursor_pos(window)
+        x, y = self._get_cursor_framebuffer_pos(window)
         viewport = self._get_viewport_at(int(x), int(y))
         if viewport is None or not viewport.interactive:
             return
@@ -1362,7 +1370,7 @@ class PoseVizGLSide:
                 mode.size.height,
                 mode.refresh_rate,
             )
-            self.resolution = (mode.size.width, mode.size.height)
+            self.resolution = glfw.get_framebuffer_size(self.window)
             self.render_resolution = self.resolution  # Match display for sharpness
             self.fullscreen = True
         else:
@@ -1381,7 +1389,7 @@ class PoseVizGLSide:
                 self.windowed_size[1],
                 0,
             )
-            self.resolution = self.windowed_size
+            self.resolution = glfw.get_framebuffer_size(self.window)
             self.render_resolution = getattr(
                 self, "windowed_render_resolution", self.resolution
             )
@@ -1397,26 +1405,38 @@ class PoseVizGLSide:
 
     def _recreate_fbos(self):
         """Recreate framebuffers at current render_resolution."""
+        self._release_fbos()
+        self._create_fbos()
+
+    def _create_fbos(self):
+        """Create the multisampled and resolved framebuffers at render_resolution."""
         render_w, render_h = self.render_resolution
 
-        # Release old FBOs
+        # Keep references to the attachments: releasing only the framebuffer
+        # objects would leak the renderbuffers/textures (moderngl does no GC).
+        msaa_color = self.ctx.renderbuffer((render_w, render_h), 4, samples=self.samples)
+        msaa_depth = self.ctx.depth_renderbuffer((render_w, render_h), samples=self.samples)
+        color = self.ctx.texture((render_w, render_h), 4)  # RGBA
+        depth = self.ctx.depth_texture((render_w, render_h))
+        self._fbo_attachments = [msaa_color, msaa_depth, color, depth]
+
+        # Multisampled FBO for antialiased rendering
+        self.fbo_msaa = self.ctx.framebuffer(
+            color_attachments=[msaa_color], depth_attachment=msaa_depth
+        )
+
+        # Resolved FBO with texture (for video encoding and display)
+        self.fbo = self.ctx.framebuffer(
+            color_attachments=[color], depth_attachment=depth
+        )
+
+    def _release_fbos(self):
         if self.fbo_msaa is not None:
             self.fbo_msaa.release()
+            self.fbo_msaa = None
         if self.fbo is not None:
             self.fbo.release()
-
-        # Create multisampled FBO for antialiased rendering
-        self.fbo_msaa = self.ctx.framebuffer(
-            color_attachments=[
-                self.ctx.renderbuffer((render_w, render_h), 4, samples=self.samples)
-            ],
-            depth_attachment=self.ctx.depth_renderbuffer(
-                (render_w, render_h), samples=self.samples
-            ),
-        )
-
-        # Create resolved FBO with texture (for video encoding and display)
-        self.fbo = self.ctx.framebuffer(
-            color_attachments=[self.ctx.texture((render_w, render_h), 4)],
-            depth_attachment=self.ctx.depth_texture((render_w, render_h)),
-        )
+            self.fbo = None
+        for attachment in self._fbo_attachments:
+            attachment.release()
+        self._fbo_attachments = []

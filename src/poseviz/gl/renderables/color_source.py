@@ -9,6 +9,7 @@ class ColorSource(ABC):
     """Abstract color source for mesh rendering."""
 
     shader_name: str = None  # Shader to use with this color source
+    needs_blend: bool = False  # Whether rendering requires alpha blending
 
     @abstractmethod
     def setup(self, ctx: moderngl.Context, max_vertices: int):
@@ -72,9 +73,11 @@ class VertexRGBColor(ColorSource):
     def __init__(self):
         self.vbo: moderngl.Buffer = None
         self.ctx: moderngl.Context = None
+        self.max_vertices: int = 0
 
     def setup(self, ctx: moderngl.Context, max_vertices: int):
         self.ctx = ctx
+        self.max_vertices = max_vertices
         self.vbo = ctx.buffer(reserve=max_vertices * 12)  # 3 floats per vertex
 
     def get_vao_content(self) -> list:
@@ -83,7 +86,7 @@ class VertexRGBColor(ColorSource):
     def update(self, data: np.ndarray):
         """Update colors. data is (N, 3) array of RGB values (0-1)."""
         if data is not None and len(data) > 0:
-            self.vbo.write(data.astype(np.float32).tobytes())
+            self.vbo.write(np.asarray(data[: self.max_vertices], np.float32).tobytes())
 
     def bind(self, program: moderngl.Program):
         pass  # Color comes from vertex attribute, no uniforms
@@ -107,9 +110,11 @@ class ScalarColormapColor(ColorSource):
         self.vbo: moderngl.Buffer = None
         self.colormap: Colormap = None
         self.ctx: moderngl.Context = None
+        self.max_vertices: int = 0
 
     def setup(self, ctx: moderngl.Context, max_vertices: int):
         self.ctx = ctx
+        self.max_vertices = max_vertices
         self.vbo = ctx.buffer(reserve=max_vertices * 4)  # 1 float per vertex
         self.colormap = Colormap.get(ctx, self.colormap_name)
 
@@ -119,7 +124,7 @@ class ScalarColormapColor(ColorSource):
     def update(self, data: np.ndarray, auto_range: bool = False):
         """Update scalars. data is (N,) array of scalar values."""
         if data is not None and len(data) > 0:
-            data = data.astype(np.float32)
+            data = np.asarray(data, np.float32)[: self.max_vertices]
             if auto_range:
                 self.vmin = float(data.min())
                 self.vmax = float(data.max())
@@ -159,9 +164,15 @@ class TextureColor(ColorSource):
         self.texcoord_vbo: moderngl.Buffer = None
         self.ctx: moderngl.Context = None
         self._texture_shape: tuple = None
+        self.max_vertices: int = 0
+
+    @property
+    def needs_blend(self) -> bool:
+        return self.opacity < 1.0
 
     def setup(self, ctx: moderngl.Context, max_vertices: int):
         self.ctx = ctx
+        self.max_vertices = max_vertices
         self.texcoord_vbo = ctx.buffer(reserve=max_vertices * 8)
 
     def get_vao_content(self) -> list:
@@ -169,7 +180,8 @@ class TextureColor(ColorSource):
 
     def set_texcoords(self, texcoords: np.ndarray):
         """Set UV coordinates (typically once per mesh)."""
-        self.texcoord_vbo.write(texcoords.astype(np.float32).tobytes())
+        texcoords = np.asarray(texcoords, np.float32)[: self.max_vertices]
+        self.texcoord_vbo.write(texcoords.tobytes())
 
     def set_texture(self, image: np.ndarray):
         """Set texture image."""
@@ -177,7 +189,11 @@ class TextureColor(ColorSource):
             return
         h, w = image.shape[:2]
         components = image.shape[2] if image.ndim > 2 else 1
-        if self.texture is None or (h, w) != self._texture_shape:
+        if (
+            self.texture is None
+            or (h, w) != self._texture_shape
+            or self.texture.components != components
+        ):
             if self.texture is not None:
                 self.texture.release()
             self.texture = self.ctx.texture((w, h), components)

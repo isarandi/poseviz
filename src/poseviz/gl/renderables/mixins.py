@@ -1,7 +1,11 @@
+import logging
+
 import numpy as np
 import moderngl
 
 from poseviz.gl.renderables.colormap import Colormap
+
+logger = logging.getLogger(__name__)
 
 
 class TextureMixin:
@@ -13,10 +17,18 @@ class TextureMixin:
 
     def _create_texture(self, width: int, height: int, components: int = 3):
         """Create or recreate texture with given dimensions."""
+        if self._cuda_writer is not None:
+            # The CUDA registration refers to the old GL texture; GL may recycle
+            # the object name, so it must be dropped before releasing the texture.
+            self._cuda_writer.release()
         if self.texture is not None:
             self.texture.release()
         self.texture = self.ctx.texture((width, height), components)
         self.texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        # Clamp to edge: with wrap-around, the outermost half-texel would blend
+        # with the opposite edge of the image.
+        self.texture.repeat_x = False
+        self.texture.repeat_y = False
         self._texture_shape = (height, width)
 
     def _update_texture(self, image):
@@ -94,6 +106,12 @@ class InstancedMixin:
             self.instance_count = 0
             return 0
         n = min(len(data), self.max_instances)
+        if n < len(data) and not getattr(self, "_warned_instance_clamp", False):
+            logger.warning(
+                f"Too many instances ({len(data)}); only {n} are shown. "
+                f"Increase max_instances."
+            )
+            self._warned_instance_clamp = True
         self.instance_vbo.write(data[:n].astype(np.float32).tobytes())
         self.instance_count = n
         return n
@@ -115,6 +133,7 @@ class ScalarColormapMixin:
 
     def _init_scalar_colormap(self, max_vertices: int, colormap_name: str = "viridis"):
         """Initialize scalar buffer and colormap."""
+        self._max_scalars = max_vertices
         self.scalar_vbo = self.ctx.buffer(reserve=max_vertices * 4)
         self.colormap = Colormap.get(self.ctx, colormap_name)
 
@@ -125,7 +144,7 @@ class ScalarColormapMixin:
             scalars: (N,) array of scalar values
             auto_range: If True, set vmin/vmax from data
         """
-        scalars = scalars.astype(np.float32)
+        scalars = scalars.astype(np.float32)[: self._max_scalars]
         if auto_range and len(scalars) > 0:
             self.vmin = float(scalars.min())
             self.vmax = float(scalars.max())

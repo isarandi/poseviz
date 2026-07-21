@@ -62,7 +62,8 @@ class WireframeRenderable(ShaderRenderable):
             self.vertex_count = 0
             return
 
-        vertices = vertices.astype(np.float32)
+        # Clamp to the buffer reservation, keeping the count even (whole segments)
+        vertices = np.asarray(vertices, np.float32)[: self.max_vertices // 2 * 2]
         self._vbo.write(vertices.tobytes())
         self.vertex_count = len(vertices)
 

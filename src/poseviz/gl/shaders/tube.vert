@@ -17,12 +17,13 @@ out vec3 v_color;
 
 void main() {
     // Compute cylinder transform
-    vec3 axis = instance_end - instance_start;
-    float length = max(length(axis), 0.0001);
-    vec3 dir = axis / length;
-
-    // Build rotation matrix to align Y axis with dir
     vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 axis = instance_end - instance_start;
+    float seg_length = max(length(axis), 0.0001);
+    // Zero-length segments (coincident joints) would produce NaNs below
+    vec3 dir = length(axis) > 1e-6 ? axis / seg_length : up;
+
+    // Build right-handed rotation matrix to align Y axis with dir
     vec3 right;
     vec3 forward;
 
@@ -31,13 +32,13 @@ void main() {
     } else {
         right = normalize(cross(up, dir));
     }
-    forward = cross(dir, right);
+    forward = cross(right, dir);
 
     mat3 rot = mat3(right, dir, forward);
 
     // Transform vertex: scale by radius and length, rotate, translate
     vec3 scaled = vec3(in_position.x * instance_radius,
-                       in_position.y * length,
+                       in_position.y * seg_length,
                        in_position.z * instance_radius);
     vec3 world_pos = rot * scaled + instance_start;
 

@@ -45,7 +45,10 @@ def _get_cudart():
 
 def _check(err, name):
     if err != 0:
-        raise RuntimeError(f"{name} failed with error {err}")
+        cudart = _get_cudart()
+        cudart.cudaGetErrorString.restype = ctypes.c_char_p
+        message = cudart.cudaGetErrorString(err).decode()
+        raise RuntimeError(f"{name} failed with error {err} ({message})")
 
 
 class CudaGLTextureWriter:
@@ -53,7 +56,10 @@ class CudaGLTextureWriter:
 
     def __init__(self):
         self._resource = ctypes.c_void_p(0)
-        self._registered_glo = None
+        # Strong reference to the registered texture: GL recycles object names,
+        # so a bare `glo` comparison could silently match a new texture that
+        # reuses the name of a released one.
+        self._registered_texture = None
 
     def write(self, tensor, texture):
         """Copy a CUDA tensor to a ModernGL texture (GPU-internal).
@@ -64,11 +70,13 @@ class CudaGLTextureWriter:
         """
         if not tensor.is_contiguous():
             raise ValueError("CUDA tensor must be contiguous for GL interop")
+        if tensor.element_size() != 1:
+            raise ValueError("CUDA tensor must be uint8 for GL interop")
 
         cudart = _get_cudart()
 
         # (Re-)register if texture changed
-        if self._registered_glo != texture.glo:
+        if self._registered_texture is not texture:
             self._unregister()
             resource = ctypes.c_void_p(0)
             _check(
@@ -81,7 +89,7 @@ class CudaGLTextureWriter:
                 "cudaGraphicsGLRegisterImage",
             )
             self._resource = resource
-            self._registered_glo = texture.glo
+            self._registered_texture = texture
 
         # Map GL texture into CUDA address space
         _check(
@@ -119,15 +127,16 @@ class CudaGLTextureWriter:
                 "cudaMemcpy2DToArray",
             )
         finally:
-            cudart.cudaGraphicsUnmapResources(
+            unmap_err = cudart.cudaGraphicsUnmapResources(
                 1, ctypes.byref(self._resource), ctypes.c_void_p(0)
             )
+        _check(unmap_err, "cudaGraphicsUnmapResources")
 
     def _unregister(self):
-        if self._registered_glo is not None:
+        if self._registered_texture is not None:
             _get_cudart().cudaGraphicsUnregisterResource(self._resource)
             self._resource = ctypes.c_void_p(0)
-            self._registered_glo = None
+            self._registered_texture = None
 
     def release(self):
         self._unregister()

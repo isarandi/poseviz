@@ -214,19 +214,14 @@ class ViewVisualizer:
             tubes_right.update(np.zeros((0, 3)), np.zeros((0, 3)))
             return
 
-        all_joints = np.concatenate(
-            poses, axis=0
-        )  # (total_joints, 3) in world coords (mm)
-        n_joints = poses[0].shape[0]
-        n_poses = len(poses)
-
-        # Reshape for indexing
-        joints_reshaped = all_joints.reshape(n_poses, n_joints, 3)
+        # Strip confidence/uncertainty columns; iterate per pose so that
+        # heterogeneous joint counts cannot break a bulk reshape
+        poses = [np.asarray(pose, np.float32)[..., :3] for pose in poses]
 
         # Gather joints by side
-        left_joints = joints_reshaped[:, self.left_indices].reshape(-1, 3)
-        mid_joints = joints_reshaped[:, self.mid_indices].reshape(-1, 3)
-        right_joints = joints_reshaped[:, self.right_indices].reshape(-1, 3)
+        left_joints = np.concatenate([pose[self.left_indices] for pose in poses])
+        mid_joints = np.concatenate([pose[self.mid_indices] for pose in poses])
+        right_joints = np.concatenate([pose[self.right_indices] for pose in poses])
 
         spheres_left.update(left_joints, self.scale)
         spheres_mid.update(mid_joints, self.scale)
@@ -236,7 +231,7 @@ class ViewVisualizer:
         def gather_edges(edges):
             starts = []
             ends = []
-            for pose in joints_reshaped:
+            for pose in poses:
                 for i, j in edges:
                     starts.append(pose[i])
                     ends.append(pose[j])
@@ -255,17 +250,14 @@ class ViewVisualizer:
             tubes.update(np.zeros((0, 3)), np.zeros((0, 3)))
             return
 
+        poses = [np.asarray(pose, np.float32)[..., :3] for pose in poses]
         all_joints = np.concatenate(poses, axis=0)  # World coords (mm)
 
         spheres.update(all_joints, self.scale)
 
-        # All edges
-        n_joints = poses[0].shape[0]
-        joints_reshaped = all_joints.reshape(len(poses), n_joints, 3)
-
         starts = []
         ends = []
-        for pose in joints_reshaped:
+        for pose in poses:
             for i, j in self.joint_edges:
                 starts.append(pose[i])
                 ends.append(pose[j])

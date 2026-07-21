@@ -21,12 +21,10 @@ class PyramidPicker:
         # Shader - reuse line shader (flat color)
         self.program = load_program(ctx, "line")
 
-        # VBO for pyramid triangles (will be updated dynamically)
+        # VBO for one pyramid at a time (pyramids are drawn one by one, each
+        # with its own picking color)
         # Each pyramid: 4 side triangles + 2 base triangles = 6 triangles = 18 vertices
-        self.max_cameras = 32
-        self.vbo = ctx.buffer(
-            reserve=self.max_cameras * 18 * 3 * 4
-        )  # 18 verts * 3 floats * 4 bytes
+        self.vbo = ctx.buffer(reserve=18 * 3 * 4)  # 18 verts * 3 floats * 4 bytes
 
         self.vao = ctx.vertex_array(
             self.program,
@@ -62,8 +60,15 @@ class PyramidPicker:
         """Clear all camera pyramid data."""
         self.pyramid_data = []
 
+    def truncate(self, n_cameras: int):
+        """Drop pyramid data of removed cameras (when the view count shrinks)."""
+        del self.pyramid_data[n_cameras:]
+
     def resize(self, width: int, height: int):
         """Resize the picking framebuffer."""
+        width, height = max(1, width), max(1, height)
+        if (width, height) == self.resolution:
+            return
         self.resolution = (width, height)
         self.color_attachment.release()
         self.depth_attachment.release()

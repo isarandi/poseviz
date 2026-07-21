@@ -104,17 +104,19 @@ requires coordination: the producer must not overwrite data the consumer is
 still reading.
 
 PoseViz uses a ring buffer for this. The buffer has N slots, where N equals the sum of
-all queue capacities plus one::
+all queue capacities plus a margin::
 
-    N = queue_size_undist + queue_size_waiter + queue_size_post + 1
+    N = queue_size_undist + queue_size_waiter + queue_size_post + 4
 
 Each slot holds one frame's worth of pixels. The main process writes to slot
 ``i``, then increments ``i`` modulo N. The message sent to the visualizer
 includes the slot index, so the visualizer knows where to read.
 
 The sizing ensures safety: by the time slot ``i`` is reused, the visualizer
-has finished with the frame that was stored there. The ``+1`` accounts for
-the frame currently being processed.
+has finished with the frame that was stored there. The ``+4`` margin accounts
+for the frames held outside the queues: the message in the waiter thread's
+hand, the renderer's internal one-message buffer, the frame currently being
+displayed, and the slot currently being written.
 
 Slot allocation happens inside ``update_multiview()``. Each view's frame is
 written to ``self.ring_index``, and the index advances after all views are

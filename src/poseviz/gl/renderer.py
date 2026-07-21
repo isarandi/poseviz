@@ -57,6 +57,8 @@ class PoseVizGLSide:
         headless=False,
         gpu_encode=True,
         fullscreen=False,
+        paused=False,
+        resume_flag=None,
     ):
         self.q_messages = q_messages
         self.video_writer = None  # Will be set based on mode
@@ -80,7 +82,8 @@ class PoseVizGLSide:
         self.ground_plane_height = ground_plane_height
         self.show_ground_plane = show_ground_plane
         self.step_one_by_one = False
-        self.paused = False
+        self.paused = paused
+        self.resume_flag = resume_flag
         self.current_viewinfos = None
         self.high_quality = high_quality
         self.draw_2d_pose = draw_2d_pose
@@ -239,10 +242,24 @@ class PoseVizGLSide:
             remaining = frame_time - (now - last_time)
 
             if self.paused:
-                if remaining > 0.001:
+                self._check_resume_flag()
+                # Keep draining control messages so that pause/quit stay reachable;
+                # buffer at most one scene update until unpaused.
+                if pending_msg is None:
+                    try:
+                        pending_msg = self.q_messages.get(timeout=0.002)
+                    except queue.Empty:
+                        pass
+                if pending_msg is not None and not isinstance(
+                    pending_msg, messages.UpdateScene
+                ):
+                    msg = pending_msg
+                    pending_msg = None
+                elif remaining > 0.001:
                     time.sleep(min(remaining, 0.002))
                     continue
-                msg = messages.Nothing()
+                else:
+                    msg = messages.Nothing()
             elif remaining > 0.001:
                 # Buffer content during idle time, but don't render yet
                 if pending_msg is None:
@@ -269,11 +286,14 @@ class PoseVizGLSide:
             # Process messages
             t0 = time.perf_counter()
             has_content = isinstance(msg, messages.UpdateScene)
-            should_quit = self.handle_message(msg)
+            should_quit = self._handle_message_safely(msg)
             t1 = time.perf_counter()
 
             # Render
-            self.render()
+            try:
+                self.render()
+            except Exception:
+                logger.exception("Error while rendering.")
             t2 = time.perf_counter()
             glfw.swap_buffers(self.window)
             t3 = time.perf_counter()
@@ -317,6 +337,17 @@ class PoseVizGLSide:
                 _t_handle = _t_render = _t_swap = 0.0
                 _t_content_frames = _t_empty_frames = 0
                 _t_last_log = t_now
+
+        if not should_quit:
+            # The window was closed (ESC or close button) before a Quit message
+            # arrived. Keep processing messages off-screen so that the producer
+            # process is not blocked forever and video output stays intact.
+            logger.info("Window closed; continuing to process updates off-screen.")
+            glfw.hide_window(self.window)
+            if pending_msg is not None:
+                should_quit = self._handle_message_safely(pending_msg)
+            if not should_quit:
+                self._message_pump()
 
         glfw.terminate()
 
@@ -384,15 +415,72 @@ class PoseVizGLSide:
             self.video_writer = framepump.VideoWriter()
 
         # Simple loop - block-wait for messages, no spinning
-        should_quit = False
-        while not should_quit:
-            # Block until message arrives (no fps throttling, max throughput)
-            msg = self.q_messages.get()
-            should_quit = self.handle_message(msg)
-            self.render()
+        self._message_pump()
 
         # Cleanup
         glfw.terminate()
+
+    def _message_pump(self):
+        """Process messages at full speed without a visible window.
+
+        Used for headless operation and after the interactive window is closed.
+        Honors pause: scene updates are held back (at most one buffered) while
+        control messages are still processed.
+        """
+        import time
+
+        pending_msg = None
+        should_quit = False
+        while not should_quit:
+            if self.paused:
+                self._check_resume_flag()
+                if pending_msg is None:
+                    try:
+                        pending_msg = self.q_messages.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
+                if isinstance(pending_msg, messages.UpdateScene):
+                    time.sleep(0.01)
+                    continue
+                msg = pending_msg
+                pending_msg = None
+            elif pending_msg is not None:
+                msg = pending_msg
+                pending_msg = None
+            else:
+                msg = self.q_messages.get()
+
+            should_quit = self._handle_message_safely(msg)
+            try:
+                self.render()
+            except Exception:
+                logger.exception("Error while rendering.")
+
+    def _check_resume_flag(self):
+        """Apply an out-of-band resume request (see PoseViz.resume).
+
+        Only called while paused: the flag must not be consumed earlier, or a
+        resume issued while the Pause message is still queued would be lost.
+        """
+        if self.resume_flag is not None and self.resume_flag.value:
+            self.resume_flag.value = 0
+            self.paused = False
+
+    def _handle_message_safely(self, msg) -> bool:
+        """Handle a message with exception protection and queue accounting.
+
+        A single bad frame must not kill the visualizer process: the producer
+        would block forever on the filled queues. Returns True if should quit.
+        """
+        should_quit = False
+        try:
+            should_quit = self.handle_message(msg)
+        except Exception:
+            logger.exception("Error while handling message; skipping it.")
+        finally:
+            if not isinstance(msg, messages.Nothing):
+                self.q_messages.task_done()
+        return should_quit
 
     def _init_renderers(self):
         """Initialize view visualizers and other renderers."""
@@ -486,12 +574,14 @@ class PoseVizGLSide:
         )
 
     def handle_message(self, msg) -> bool:
-        """Handle a message. Returns True if should quit."""
+        """Handle a message. Returns True if should quit.
+
+        Queue accounting (task_done) is performed by the caller
+        (_handle_message_safely), so that it also happens when handling raises.
+        """
         if isinstance(msg, messages.Nothing):
             if self.current_viewinfos is not None:
                 self.update_view_camera()
-            if self.paused:
-                self.capture_frame()
             return False
 
         elif isinstance(msg, messages.UpdateScene):
@@ -504,14 +594,12 @@ class PoseVizGLSide:
                 self.paused = True
 
             self.i_pred_frame += 1
-            self.q_messages.task_done()
             return False
 
         elif isinstance(msg, messages.ReinitCameraView):
             if self.snap_to_cam_on_scene_change:
                 self.initialized_camera = False
                 self.current_viewinfos = None
-            self.q_messages.task_done()
             return False
 
         elif isinstance(msg, messages.StartSequence):
@@ -522,30 +610,26 @@ class PoseVizGLSide:
                 is_gl = isinstance(self.video_writer, GLVideoWriter)
                 self.video_writer.start_sequence(
                     msg.video_path,
-                    fps=msg.fps,
+                    fps=msg.fps if msg.fps is not None else 30,
                     audio_source_path=msg.audio_source_path,
                     **({} if is_gl else dict(gpu=True)),
                 )
             self.camera_trajectory_path = msg.camera_trajectory_path
             self.i_pred_frame = 0
-            self.q_messages.task_done()
             return False
 
         elif isinstance(msg, messages.Pause):
             self.paused = True
-            self.q_messages.task_done()
             return False
 
         elif isinstance(msg, messages.Resume):
             self.paused = False
-            self.q_messages.task_done()
             return False
 
         elif isinstance(msg, messages.EndSequence):
             if self.camera_trajectory_path is not None:
                 spu.dump_pickle(self.camera_trajectory, self.camera_trajectory_path)
             self.video_writer.end_sequence()
-            self.q_messages.task_done()
             return False
 
         elif isinstance(msg, messages.Quit):
@@ -556,25 +640,16 @@ class PoseVizGLSide:
             # Drain any remaining messages to release CUDA IPC tensor references
             while True:
                 try:
-                    leftover = self.q_messages.get_nowait()
+                    self.q_messages.get_nowait()
                     self.q_messages.task_done()
                 except queue.Empty:
                     break
-            self.q_messages.task_done()
             return True
 
         else:
             raise ValueError("Unknown message:", msg)
 
-    def receive_message(self):
-        """Get message from queue. Returns Nothing if paused or queue empty."""
-        if self.paused:
-            return messages.Nothing()
 
-        try:
-            return self.q_messages.get_nowait()
-        except queue.Empty:
-            return messages.Nothing()
 
     def update_visu(self, view_infos):
         import time

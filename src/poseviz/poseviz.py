@@ -181,12 +181,14 @@ class PoseViz(AbstractContextManager):
             headless = not os.environ.get('DISPLAY') and not os.environ.get('WAYLAND_DISPLAY')
 
         self.gpu_frames = gpu_frames
+        self._closed = False
         queue_size_post = 6
         queue_size_waiter = queue_size
         self.q_messages_pre = queue.Queue(queue_size_waiter)
-        if paused:
-            self.pause()
         self.q_messages_post = _mp_ctx.JoinableQueue(queue_size_post)
+        # Out-of-band resume signal: a Resume message would queue up behind
+        # buffered UpdateScene messages that a paused renderer will not consume.
+        self.resume_value = _mp_ctx.Value("i", 0)
 
         if gpu_frames:
             self.frame_rings = []
@@ -196,8 +198,11 @@ class PoseViz(AbstractContextManager):
             self.undistort_pool = spu.ThrottledPool(
                 n_threads_undist, use_threads=True, task_buffer_size=queue_size_undist
             )
+            # Slots that can be in flight at once: undistort task buffer, waiter
+            # queue, the message in the waiter's hand, post queue, the renderer's
+            # pending message and the one it currently displays.
             self.ringbuffer_size = (
-                queue_size_undist + queue_size_waiter + queue_size_post + 1
+                queue_size_undist + queue_size_waiter + queue_size_post + 4
             )
             self.frame_rings = [
                 SharedRingBuffer(self.ringbuffer_size, max_pixels_per_frame * 3, np.uint8)
@@ -250,6 +255,8 @@ class PoseViz(AbstractContextManager):
                 headless,
                 gpu_encode,
                 fullscreen,
+                paused,
+                self.resume_value,
             ),
             daemon=True,
         )
@@ -265,7 +272,7 @@ class PoseViz(AbstractContextManager):
         #     )
 
         if out_video_path is not None:
-            self.new_sequence_output(out_video_path, out_fps, audio_path)
+            self.new_sequence_output(out_video_path, out_fps, audio_source_path=audio_path)
 
     def update(
         self,
@@ -405,10 +412,18 @@ class PoseViz(AbstractContextManager):
         self.q_messages_pre.put(messages.ReinitCameraView())
 
     def pause(self):
+        """Pauses the visualization once the already-buffered updates have been displayed."""
         self.q_messages_pre.put(messages.Pause())
 
     def resume(self):
-        self.q_messages_pre.put(messages.Resume())
+        """Resumes a paused visualization.
+
+        This is signaled out-of-band (not through the message queue), because a paused
+        visualizer does not consume buffered scene updates, which would make a queued
+        resume message unreachable. Consequently, calling resume() while nothing is
+        paused (and no pause is pending) cancels the next pause.
+        """
+        self.resume_value.value = 1
 
     def new_sequence_output(
         self,
@@ -429,7 +444,7 @@ class PoseViz(AbstractContextManager):
             self.q_messages_pre.put(
                 messages.StartSequence(
                     video_path=new_video_path,
-                    fps=fps,
+                    fps=fps if fps is not None else 30,
                     camera_trajectory_path=new_camera_trajectory_path,
                     audio_source_path=audio_source_path,
                 )
@@ -441,19 +456,41 @@ class PoseViz(AbstractContextManager):
         self.q_messages_pre.put(messages.EndSequence())
 
     def close(self):
-        """Closes the visualization process and window."""
+        """Closes the visualization process and window.
+
+        Waits until all buffered updates have been displayed (and written to the output
+        video, if any). Idempotent, and robust to the visualizer process having died.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
         if not self.gpu_frames:
             self.undistort_pool.finish()
-        self.q_messages_pre.put(messages.Quit())
-        self._join()
-        self.posedata_waiter_thread.join()
-        self.visualizer_process.join()
 
-    def _join(self):
-        if not self.gpu_frames:
-            self.undistort_pool.join()
-        self.q_messages_pre.join()
-        self.q_messages_post.join()
+        # A paused visualizer does not consume messages, so it would never see Quit.
+        self.resume_value.value = 1
+
+        while True:
+            if not self.visualizer_process.is_alive():
+                logger.error(
+                    "Visualizer process is not running; skipping graceful shutdown."
+                )
+                try:
+                    # Let an idle waiter thread exit; if the queue is full, the
+                    # daemon waiter thread is simply abandoned.
+                    self.q_messages_pre.put_nowait(messages.Quit())
+                except queue.Full:
+                    pass
+                break
+            try:
+                self.q_messages_pre.put(messages.Quit(), timeout=1.0)
+                break
+            except queue.Full:
+                continue
+
+        self.visualizer_process.join()
+        self.posedata_waiter_thread.join(timeout=5.0)
 
     def __exit__(self, _exc_type, _exc_val, _exc_tb):
         """Context manager protocol."""
@@ -506,7 +543,14 @@ def main_posedata_waiter(q_posedata_pre, q_posedata_post):
         msg = q_posedata_pre.get()
         t1 = time.perf_counter()
         if isinstance(msg, messages.UpdateScene):
-            msg.view_infos = [v.get() for v in msg.view_infos]
+            try:
+                msg.view_infos = [v.get() for v in msg.view_infos]
+            except Exception:
+                # An exception in an undistort worker must not kill this thread:
+                # that would silently stall the whole pipeline. Drop the frame.
+                logger.exception("Error while preparing a frame update; dropping it.")
+                q_posedata_pre.task_done()
+                continue
         t2 = time.perf_counter()
         q_posedata_post.put(msg)
         t3 = time.perf_counter()

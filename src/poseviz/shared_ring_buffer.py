@@ -43,6 +43,12 @@ class SharedRingBuffer:
 
     def _slot_array(self, index: int, shape: tuple) -> np.ndarray:
         n_elems = int(np.prod(shape))
+        if n_elems > self.max_elems:
+            raise ValueError(
+                f"Requested {n_elems} elements, but slots hold at most {self.max_elems}."
+            )
+        if not 0 <= index < self.n_slots:
+            raise IndexError(f"Slot index {index} out of range (n_slots={self.n_slots}).")
         offset = index * self.max_bytes_per_slot
         return np.frombuffer(
             self._raw, dtype=self.dtype, count=n_elems, offset=offset

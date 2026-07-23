@@ -18,16 +18,14 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 
 dependencies = [
-    'more-itertools',
     'opencv-python',
     'numpy',
     'moderngl',
     'glfw',
-    'imageio',
     'deltacamera>=0.7.0',
-    'framepump',
+    # GLVideoWriter and the start_sequence(gpu=...) API require 0.2.0
+    'framepump>=0.2.0',
     'simplepyutils',
-    'rlemasklib',
     'numba',
 ]
 
@@ -39,6 +37,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "poseviz.gl.shaders" = ["*.vert", "*.frag", "*.geom"]
+"poseviz.gl.renderables" = ["*.npz"]
 
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"

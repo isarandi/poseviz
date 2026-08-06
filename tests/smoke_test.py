@@ -216,6 +216,72 @@ def test_confidence_poses():
     print("(J,4) confidence poses OK")
 
 
+def test_writer_failure_surfaces():
+    # An unwritable video path must surface as a VisualizerError in the
+    # producer process, not silently produce no output with exit code 0.
+    raised = False
+    try:
+        with poseviz.PoseViz(JOINT_NAMES, JOINT_EDGES, headless=True, gpu_encode=False) as viz:
+            viz.new_sequence_output("/proc/no_such_dir/out.mp4", fps=30)
+            for i in range(30):
+                viz.update(frame=make_frame(i), poses=make_poses(i), camera=camera())
+            viz.finalize_sequence_output()
+    except poseviz.VisualizerError as e:
+        raised = True
+        print(f"writer failure surfaced OK ({str(e).splitlines()[0]})")
+    assert raised, "expected VisualizerError for unwritable video path"
+
+
+def test_zero_frames_raises():
+    # A requested video output with zero frames written must raise, not
+    # silently produce nothing.
+    raised = False
+    try:
+        with poseviz.PoseViz(JOINT_NAMES, JOINT_EDGES, headless=True, gpu_encode=False) as viz:
+            viz.new_sequence_output(f"{OUT_DIR}/zero.mp4", fps=30)
+            viz.finalize_sequence_output()
+    except poseviz.VisualizerError as e:
+        raised = True
+        print(f"zero-frames sequence raised OK ({str(e).splitlines()[0]})")
+    assert raised, "expected VisualizerError for zero-frame sequence output"
+
+
+def test_sequence_reports():
+    viz = poseviz.PoseViz(JOINT_NAMES, JOINT_EDGES, headless=True, gpu_encode=False)
+    viz.new_sequence_output(f"{OUT_DIR}/rep1.mp4", fps=30)
+    for i in range(5):
+        viz.update(frame=make_frame(i), poses=make_poses(i), camera=camera())
+    viz.finalize_sequence_output()
+    viz.new_sequence_output(f"{OUT_DIR}/rep2.mp4", fps=30)
+    for i in range(3):
+        viz.update(frame=make_frame(i), poses=make_poses(i), camera=camera())
+    viz.finalize_sequence_output()
+    reports = viz.close()
+    assert len(reports) == 2, f"expected 2 reports, got {len(reports)}: {reports}"
+    assert reports[0].video_path.endswith("rep1.mp4") and reports[0].frames_written == 5
+    assert reports[1].video_path.endswith("rep2.mp4") and reports[1].frames_written == 3
+    assert reports[0].error_type is None and reports[1].error_type is None
+    print("sequence reports OK")
+
+
+def test_implicit_sequence_end():
+    # Starting a new sequence without finalizing the previous one must still
+    # finalize and report the previous one; quitting finalizes the last one.
+    viz = poseviz.PoseViz(JOINT_NAMES, JOINT_EDGES, headless=True, gpu_encode=False)
+    viz.new_sequence_output(f"{OUT_DIR}/impl1.mp4", fps=30)
+    for i in range(4):
+        viz.update(frame=make_frame(i), poses=make_poses(i), camera=camera())
+    viz.new_sequence_output(f"{OUT_DIR}/impl2.mp4", fps=30)  # no finalize before
+    for i in range(2):
+        viz.update(frame=make_frame(i), poses=make_poses(i), camera=camera())
+    reports = viz.close()  # no finalize before either
+    assert len(reports) == 2, f"expected 2 reports, got {len(reports)}: {reports}"
+    assert reports[0].frames_written == 4 and reports[1].frames_written == 2
+    assert os.path.getsize(f"{OUT_DIR}/impl1.mp4") > 1000
+    assert os.path.getsize(f"{OUT_DIR}/impl2.mp4") > 1000
+    print("implicit sequence end OK")
+
+
 TESTS = [
     test_basic_video_and_trajectory,
     test_audio_path_not_overwritten,
@@ -231,6 +297,10 @@ TESTS = [
     test_uint16_frame,
     test_frameless_view,
     test_confidence_poses,
+    test_writer_failure_surfaces,
+    test_zero_frames_raises,
+    test_sequence_reports,
+    test_implicit_sequence_end,
 ]
 
 if __name__ == "__main__":

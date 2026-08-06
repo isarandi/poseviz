@@ -6,6 +6,7 @@ import os
 import queue
 import signal
 import threading
+import traceback
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from typing import Optional, TYPE_CHECKING
@@ -17,9 +18,15 @@ import poseviz.draw2d
 import poseviz.view_info
 import simplepyutils as spu
 from poseviz import messages
+from poseviz.errors import VisualizerError
 from poseviz.shared_ring_buffer import SharedRingBuffer
 
 logger = logging.getLogger(__name__)
+
+# The undistortion waiter drops individually failing frames, but this many in
+# a row while a sequence output is active means the output is silently losing
+# frames, which must be surfaced to the caller.
+CONSECUTIVE_DROPS_FATAL = 10
 
 if TYPE_CHECKING:
     from poseviz import ViewInfo
@@ -79,6 +86,16 @@ class PoseViz(AbstractContextManager):
         the visualization state.
         This class supports the Python **context manager** protocol to close the visualization at
         the end.
+
+        Error handling: failures in the visualizer process that make a requested output
+        impossible (starting/writing/finalizing the output video, saving the camera
+        trajectory) are raised in the caller's process as ``poseviz.VisualizerError`` at
+        the next API call (``update``, ``new_sequence_output``,
+        ``finalize_sequence_output`` or ``close``), carrying the visualizer-side
+        traceback. Purely visual per-frame hiccups do not raise; they are only logged
+        (and escalate to an error only if they persist while a sequence output is
+        active). If no output is requested, visualization stays best-effort and nothing
+        raises except a failure of the visualizer process itself.
 
         Args:
             joint_names (iterable of strings): Names of the human body joints that will be
@@ -195,6 +212,15 @@ class PoseViz(AbstractContextManager):
         # buffered UpdateScene messages that a paused renderer will not consume.
         self.resume_value = _mp_ctx.Value("i", 0)
 
+        # Fault/report channel from the visualizer process: Fault messages are
+        # raised as VisualizerError at the next API call, SequenceReports are
+        # collected and returned by close(). See the class docstring.
+        self.q_faults = _mp_ctx.Queue()
+        self._pending_faults = []
+        self._sequence_reports = []
+        # Mutable holder so the waiter thread sees sequence-output state changes
+        self._output_active = [False]
+
         if gpu_frames:
             self.frame_rings = []
         else:
@@ -217,7 +243,12 @@ class PoseViz(AbstractContextManager):
 
         self.posedata_waiter_thread = threading.Thread(
             target=main_posedata_waiter,
-            args=(self.q_messages_pre, self.q_messages_post),
+            args=(
+                self.q_messages_pre,
+                self.q_messages_post,
+                self._pending_faults,
+                self._output_active,
+            ),
             daemon=True,
         )
         self.posedata_waiter_thread.start()
@@ -231,6 +262,7 @@ class PoseViz(AbstractContextManager):
             target=_main_visualize,
             args=(
                 self.q_messages_post,
+                self.q_faults,
                 joint_names,
                 joint_edges,
                 camera_type,
@@ -357,6 +389,8 @@ class PoseViz(AbstractContextManager):
         if len(view_infos) == 0:
             raise ValueError("view_infos must not be empty.")
 
+        self._check_faults()
+
         # Check if we can enqueue before doing any work (non-blocking mode)
         if not block and self.q_messages_pre.full():
             return
@@ -473,7 +507,9 @@ class PoseViz(AbstractContextManager):
             fps: 'frames per second' setting of the new video to be generated
             new_camera_trajectory_path: Path where the camera trajectory should be saved.
         """
+        self._check_faults()
         if new_video_path is not None or new_camera_trajectory_path is not None:
+            self._output_active[0] = True
             self.q_messages_pre.put(
                 messages.StartSequence(
                     video_path=new_video_path,
@@ -485,17 +521,34 @@ class PoseViz(AbstractContextManager):
 
     def finalize_sequence_output(self):
         """Notifies PoseViz that the current sequence is finished and the output video should be
-        finalized."""
+        finalized.
+
+        The finalization happens asynchronously, once the visualizer has consumed the
+        buffered updates; errors from it are raised at a subsequent API call, at the
+        latest in close().
+        """
+        self._check_faults()
+        self._output_active[0] = False
         self.q_messages_pre.put(messages.EndSequence())
 
-    def close(self):
+    def close(self, raise_on_error=True):
         """Closes the visualization process and window.
 
         Waits until all buffered updates have been displayed (and written to the output
         video, if any). Idempotent, and robust to the visualizer process having died.
+
+        Args:
+            raise_on_error: Whether to raise a pending ``VisualizerError`` (e.g., a
+                failed video output) after the shutdown has completed. The context
+                manager exit passes False when the body already raised, so that the
+                original exception is not masked.
+
+        Returns:
+            The list of ``poseviz.SequenceReport`` objects, one per output sequence of
+            this session (video path, number of frames written, error if any).
         """
         if self._closed:
-            return
+            return list(self._sequence_reports)
         self._closed = True
 
         if not self.gpu_frames:
@@ -525,9 +578,47 @@ class PoseViz(AbstractContextManager):
         self.visualizer_process.join()
         self.posedata_waiter_thread.join(timeout=5.0)
 
+        self._drain_fault_queue(timeout=0.25)
+        exitcode = self.visualizer_process.exitcode
+        if exitcode not in (0, None) and not self._pending_faults:
+            self._pending_faults.append(
+                messages.Fault(
+                    seq_index=None,
+                    context="visualizer process terminated unexpectedly",
+                    error_type="ProcessDeath",
+                    error_message=f"exit code {exitcode}",
+                )
+            )
+        if raise_on_error and self._pending_faults:
+            raise _fault_to_error(self._pending_faults.pop(0))
+        return list(self._sequence_reports)
+
+    def _check_faults(self):
+        """Raise a VisualizerError if the visualizer has reported a failure.
+
+        Each fault is raised exactly once; sequence reports are only collected.
+        """
+        self._drain_fault_queue()
+        if self._pending_faults:
+            raise _fault_to_error(self._pending_faults.pop(0))
+
+    def _drain_fault_queue(self, timeout=0.0):
+        while True:
+            try:
+                if timeout:
+                    item = self.q_faults.get(timeout=timeout)
+                else:
+                    item = self.q_faults.get_nowait()
+            except queue.Empty:
+                return
+            if isinstance(item, messages.SequenceReport):
+                self._sequence_reports.append(item)
+            else:
+                self._pending_faults.append(item)
+
     def __exit__(self, _exc_type, _exc_val, _exc_tb):
         """Context manager protocol."""
-        self.close()
+        self.close(raise_on_error=_exc_type is None)
 
 
 class _ImmediateResult:
@@ -540,15 +631,41 @@ class _ImmediateResult:
         return self._value
 
 
-def _main_visualize_gl(*args, **kwargs):
+def _main_visualize_gl(q_messages, q_faults, *args, **kwargs):
     _terminate_on_parent_death()
-    from poseviz.gl.renderer import PoseVizGLSide
+    try:
+        from poseviz.gl.renderer import PoseVizGLSide
 
-    viz = PoseVizGLSide(*args, **kwargs)
-    viz.run_loop()
+        viz = PoseVizGLSide(q_messages, q_faults, *args, **kwargs)
+        viz.run_loop()
+    except Exception as e:
+        # Report process-fatal failures to the producer before dying, so that
+        # it can raise instead of silently losing the visualization.
+        try:
+            q_faults.put(
+                messages.Fault(
+                    seq_index=None,
+                    context="running the visualizer process",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    traceback_str=traceback.format_exc(),
+                )
+            )
+        finally:
+            raise
 
 
 _main_visualize = _main_visualize_gl
+
+
+def _fault_to_error(fault):
+    msg = (
+        f"Error in the visualizer process ({fault.context}): "
+        f"{fault.error_type}: {fault.error_message}"
+    )
+    if fault.traceback_str:
+        msg += f"\n--- Visualizer process traceback ---\n{fault.traceback_str.rstrip()}"
+    return VisualizerError(msg)
 
 
 def _terminate_on_parent_death():
@@ -563,13 +680,15 @@ def _terminate_on_parent_death():
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
-def main_posedata_waiter(q_posedata_pre, q_posedata_post):
+def main_posedata_waiter(q_posedata_pre, q_posedata_post, fault_sink, output_active):
     import time
     _t_get = 0.0
     _t_resolve = 0.0
     _t_put = 0.0
     _t_count = 0
     _t_last = time.perf_counter()
+    consec_drops = 0
+    drops_reported = False
 
     while True:
         t0 = time.perf_counter()
@@ -578,12 +697,33 @@ def main_posedata_waiter(q_posedata_pre, q_posedata_post):
         if isinstance(msg, messages.UpdateScene):
             try:
                 msg.view_infos = [v.get() for v in msg.view_infos]
-            except Exception:
+            except Exception as e:
                 # An exception in an undistort worker must not kill this thread:
                 # that would silently stall the whole pipeline. Drop the frame.
+                # But persistent drops while an output is being written mean the
+                # output is silently missing frames: escalate to the producer.
                 logger.exception("Error while preparing a frame update; dropping it.")
+                consec_drops += 1
+                if (
+                    consec_drops >= CONSECUTIVE_DROPS_FATAL
+                    and not drops_reported
+                    and output_active[0]
+                ):
+                    drops_reported = True
+                    fault_sink.append(
+                        messages.Fault(
+                            seq_index=None,
+                            context=f"{consec_drops} consecutive frame updates "
+                            f"dropped while a sequence output is active",
+                            error_type=type(e).__name__,
+                            error_message=str(e),
+                            traceback_str=traceback.format_exc(),
+                        )
+                    )
                 q_posedata_pre.task_done()
                 continue
+            consec_drops = 0
+            drops_reported = False
         t2 = time.perf_counter()
         q_posedata_post.put(msg)
         t3 = time.perf_counter()

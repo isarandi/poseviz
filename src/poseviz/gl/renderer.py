@@ -1,6 +1,7 @@
 import itertools
 import logging
 import queue
+import traceback
 
 import glfw
 import numpy as np
@@ -21,6 +22,11 @@ import poseviz.draw2d
 
 logger = logging.getLogger(__name__)
 
+# Scene-update failures are individually recoverable, but this many in a row
+# while a sequence output is active means the output is silently missing its
+# frames, which is a sequence-fatal condition.
+CONSECUTIVE_UPDATE_FAILURES_FATAL = 5
+
 
 class PoseVizGLSide:
     """OpenGL renderer that runs in the visualizer process."""
@@ -28,6 +34,7 @@ class PoseVizGLSide:
     def __init__(
         self,
         q_messages,
+        q_faults,
         joint_names,
         joint_edges,
         camera_type,
@@ -61,6 +68,7 @@ class PoseVizGLSide:
         resume_flag=None,
     ):
         self.q_messages = q_messages
+        self.q_faults = q_faults
         self.video_writer = None  # Will be set based on mode
         self.headless = headless
         self.gpu_encode = gpu_encode
@@ -101,6 +109,13 @@ class PoseVizGLSide:
         self.i_pred_frame = 0
         self.camera_trajectory = []
         self.camera_trajectory_path = None
+
+        # Per-sequence output accounting (see _finalize_sequence)
+        self._seq_index = -1
+        self._seq_video_path = None
+        self._seq_frames_written = 0
+        self._seq_failure = None
+        self._consec_update_failures = 0
         self.show_image = show_image
         self.image_plane_distance = image_plane_distance
         self.frame_rings = frame_rings
@@ -438,13 +453,30 @@ class PoseVizGLSide:
         """Handle a message with exception protection and queue accounting.
 
         A single bad frame must not kill the visualizer process: the producer
-        would block forever on the filled queues. Returns True if should quit.
+        would block forever on the filled queues. But repeated scene-update
+        failures while a sequence output is active mean the output is silently
+        losing frames, so they escalate to a sequence fault (reported to the
+        producer). Returns True if should quit.
         """
         should_quit = False
         try:
             should_quit = self.handle_message(msg)
-        except Exception:
+        except Exception as e:
             logger.exception("Error while handling message; skipping it.")
+            if isinstance(msg, messages.UpdateScene):
+                self._consec_update_failures += 1
+                if (
+                    self._consec_update_failures >= CONSECUTIVE_UPDATE_FAILURES_FATAL
+                    and self._seq_output_active()
+                ):
+                    self._sequence_fault(
+                        f"{self._consec_update_failures} consecutive scene-update "
+                        f"failures while a sequence output is active",
+                        e,
+                    )
+        else:
+            if isinstance(msg, messages.UpdateScene):
+                self._consec_update_failures = 0
         finally:
             if not isinstance(msg, messages.Nothing):
                 self.q_messages.task_done()
@@ -572,20 +604,30 @@ class PoseVizGLSide:
             return False
 
         elif isinstance(msg, messages.StartSequence):
-            if msg.video_path is not None:
-                # GLVideoWriter doesn't have use_gpu param, regular VideoWriter does
-                from framepump.video_writing_gl import GLVideoWriter
-
-                is_gl = isinstance(self.video_writer, GLVideoWriter)
-                self.video_writer.start_sequence(
-                    msg.video_path,
-                    fps=msg.fps if msg.fps is not None else 30,
-                    audio_source_path=msg.audio_source_path,
-                    **({} if is_gl else dict(gpu=True)),
-                )
+            # A new sequence implicitly ends the previous one.
+            self._finalize_sequence()
+            self._seq_index += 1
+            self._seq_video_path = msg.video_path
+            self._seq_frames_written = 0
+            self._seq_failure = None
+            self._consec_update_failures = 0
             self.camera_trajectory_path = msg.camera_trajectory_path
             self.camera_trajectory = []
             self.i_pred_frame = 0
+            if msg.video_path is not None:
+                try:
+                    # GLVideoWriter doesn't have use_gpu param, regular VideoWriter does
+                    from framepump.video_writing_gl import GLVideoWriter
+
+                    is_gl = isinstance(self.video_writer, GLVideoWriter)
+                    self.video_writer.start_sequence(
+                        msg.video_path,
+                        fps=msg.fps if msg.fps is not None else 30,
+                        audio_source_path=msg.audio_source_path,
+                        **({} if is_gl else dict(gpu=True)),
+                    )
+                except Exception as e:
+                    self._sequence_fault("starting the video output", e)
             return False
 
         elif isinstance(msg, messages.Pause):
@@ -597,13 +639,15 @@ class PoseVizGLSide:
             return False
 
         elif isinstance(msg, messages.EndSequence):
-            self._dump_camera_trajectory()
-            self.video_writer.end_sequence()
+            self._finalize_sequence()
             return False
 
         elif isinstance(msg, messages.Quit):
-            self._dump_camera_trajectory()
-            self.video_writer.close()
+            self._finalize_sequence()
+            try:
+                self.video_writer.close()
+            except Exception:
+                logger.exception("Error while closing the video writer.")
             self.current_viewinfos = None
             # Drain any remaining messages to release CUDA IPC tensor references
             while True:
@@ -616,6 +660,97 @@ class PoseVizGLSide:
 
         else:
             raise ValueError("Unknown message:", msg)
+
+    def _finalize_sequence(self):
+        """End the active output sequence: dump trajectory, finalize video, report.
+
+        Idempotent: does nothing if no sequence output is active. Called on
+        EndSequence, on StartSequence (implicit end of the previous sequence)
+        and on Quit (implicit end of the last sequence).
+        """
+        if not self._seq_output_active():
+            return
+        traj_path = self.camera_trajectory_path
+        try:
+            self._dump_camera_trajectory()
+        except Exception as e:
+            self.camera_trajectory_path = None
+            self.camera_trajectory = []
+            self._sequence_fault("saving the camera trajectory", e)
+        try:
+            if self.video_writer.accepts_new_frames:
+                self.video_writer.end_sequence()
+        except Exception as e:
+            if self._seq_failure is None:
+                self._sequence_fault("finalizing the video output", e)
+            else:
+                logger.debug(
+                    "Ignoring writer cleanup error after earlier sequence failure.",
+                    exc_info=True,
+                )
+        self._emit_sequence_report(traj_path)
+
+    def _emit_sequence_report(self, traj_path):
+        """Send the SequenceReport for the ending sequence and reset its state."""
+        if self._seq_video_path is not None and self._seq_frames_written == 0:
+            self._sequence_fault(
+                "sequence video output was requested but zero frames were written",
+                RuntimeError(f"no frames were written to {self._seq_video_path}"),
+                tb="",
+            )
+        err = self._seq_failure
+        if self._seq_video_path is not None and err is None:
+            logger.info(
+                f"Wrote {self._seq_frames_written} frames to {self._seq_video_path}"
+            )
+        try:
+            self.q_faults.put(
+                messages.SequenceReport(
+                    seq_index=self._seq_index,
+                    video_path=self._seq_video_path,
+                    camera_trajectory_path=traj_path,
+                    frames_written=self._seq_frames_written,
+                    error_type=type(err).__name__ if err is not None else None,
+                    error_message=str(err) if err is not None else None,
+                )
+            )
+        except Exception:
+            logger.exception("Could not send the sequence report to the producer.")
+        self._seq_video_path = None
+        self._seq_frames_written = 0
+        self._seq_failure = None
+
+    def _seq_output_active(self):
+        return self._seq_video_path is not None or self.camera_trajectory_path is not None
+
+    def _sequence_fault(self, context, exc, tb=None):
+        """Mark the active sequence's output as failed and notify the producer.
+
+        Only the first failure of a sequence is recorded and sent; video
+        writing is suppressed for the rest of the sequence (see capture_frame).
+        """
+        if self._seq_failure is not None:
+            return
+        self._seq_failure = exc
+        if tb is None:
+            tb = traceback.format_exc()
+        logger.error(
+            f"Sequence output failed ({context}): {exc!r}. Suppressing video "
+            f"output for the rest of this sequence; the error will be raised "
+            f"in the producer process."
+        )
+        try:
+            self.q_faults.put(
+                messages.Fault(
+                    seq_index=self._seq_index,
+                    context=context,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    traceback_str=tb,
+                )
+            )
+        except Exception:
+            logger.exception("Could not report the fault to the producer process.")
 
     def _record_camera_trajectory(self):
         """Record the effective view camera of the current frame, if requested."""
@@ -1044,30 +1179,34 @@ class PoseVizGLSide:
             viz.render(view_proj)
 
     def capture_frame(self):
-        if not self.video_writer.accepts_new_frames:
+        if self._seq_failure is not None or not self.video_writer.accepts_new_frames:
             return
 
-        # Check if using GLVideoWriter (zero-copy) or regular VideoWriter
-        from framepump.video_writing_gl import GLVideoWriter
+        try:
+            # Check if using GLVideoWriter (zero-copy) or regular VideoWriter
+            from framepump.video_writing_gl import GLVideoWriter
 
-        if isinstance(self.video_writer, GLVideoWriter) and self.fbo is not None:
-            # Zero-copy: encode directly from FBO
-            # Note: FBO is upside-down for video (OpenGL Y=0 at bottom)
-            # GLVideoWriter handles the flip in the CUDA/NVENC path
-            self.ctx.finish()
-            self.video_writer.append_data(self.fbo.color_attachments[0])
-        else:
-            # CPU fallback: read pixels and flip
-            width, height = self.render_resolution if self.fbo else self.resolution
-            if self.fbo is not None:
-                data = self.fbo.read(components=3)
-                frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
-                frame = frame[::-1]  # Flip for correct video orientation
+            if isinstance(self.video_writer, GLVideoWriter) and self.fbo is not None:
+                # Zero-copy: encode directly from FBO
+                # Note: FBO is upside-down for video (OpenGL Y=0 at bottom)
+                # GLVideoWriter handles the flip in the CUDA/NVENC path
+                self.ctx.finish()
+                self.video_writer.append_data(self.fbo.color_attachments[0])
             else:
-                data = self.ctx.screen.read(components=3)
-                frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
-                frame = frame[::-1]  # Screen also needs flip
-            self.video_writer.append_data(frame)
+                # CPU fallback: read pixels and flip
+                width, height = self.render_resolution if self.fbo else self.resolution
+                if self.fbo is not None:
+                    data = self.fbo.read(components=3)
+                    frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
+                    frame = frame[::-1]  # Flip for correct video orientation
+                else:
+                    data = self.ctx.screen.read(components=3)
+                    frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
+                    frame = frame[::-1]  # Screen also needs flip
+                self.video_writer.append_data(frame)
+            self._seq_frames_written += 1
+        except Exception as e:
+            self._sequence_fault("writing a video frame", e)
 
     # --- Input callbacks ---
 

@@ -34,6 +34,19 @@ of view of the visualizer tool.
 Behind the scenes, this is achieved through forking a dedicated visualization process and passing
 new scene information via multiprocessing queues.
 
+## Error Handling
+
+When a requested output cannot be produced (the video writer fails, the camera trajectory
+cannot be saved, or the visualizer process dies), a `poseviz.VisualizerError` is raised in
+your prediction loop at the next API call, carrying the visualizer-side traceback. A
+requested video output to which zero frames were written also raises. Purely visual
+per-frame hiccups do not raise — they are logged, and only escalate to an error if they
+persist while an output is being written. If no output is requested (live demo use), the
+visualization stays best-effort and never interrupts your loop.
+
+`close()` returns a list of `poseviz.SequenceReport` objects, one per output sequence,
+with the video path and the number of frames written.
+
 ## Installation
 
 ```bash

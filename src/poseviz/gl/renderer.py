@@ -66,9 +66,11 @@ class PoseVizGLSide:
         fullscreen=False,
         paused=False,
         resume_flag=None,
+        egl_device_index=None,
     ):
         self.q_messages = q_messages
         self.q_faults = q_faults
+        self.egl_device_index = egl_device_index
         self.video_writer = None  # Will be set based on mode
         self.headless = headless
         self.gpu_encode = gpu_encode
@@ -109,6 +111,9 @@ class PoseVizGLSide:
         self.i_pred_frame = 0
         self.camera_trajectory = []
         self.camera_trajectory_path = None
+
+        # Whether the GL context is a standalone EGL one (no display server)
+        self._standalone_egl = False
 
         # Per-sequence output accounting (see _finalize_sequence)
         self._seq_index = -1
@@ -350,31 +355,11 @@ class PoseVizGLSide:
         glfw.terminate()
 
     def _run_loop_headless(self):
-        """Main loop for headless rendering (no window, GPU accelerated).
-
-        Uses GLFW with invisible window to get a proper GL context that can be
-        used with NVENC for zero-copy GPU encoding via GLVideoWriter.
-        """
+        """Main loop for headless rendering (no window, GPU accelerated)."""
         import moderngl
 
-        width, height = self.resolution
-
-        # Get a GL context: an invisible GLFW window if a display server is available,
-        # otherwise a standalone EGL context (no display server needed)
         self.window = None
-        if glfw.init():
-            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
-            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-            glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-            glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
-            self.window = glfw.create_window(width, height, "PoseViz Headless", None, None)
-
-        if self.window is not None:
-            glfw.make_context_current(self.window)
-            self.ctx = moderngl.create_context()
-        else:
-            self.ctx = moderngl.create_context(standalone=True, backend='egl')
+        self.ctx = self._create_headless_context()
 
         # Resolve render_resolution: None means match display resolution
         if self.render_resolution is None:
@@ -393,7 +378,11 @@ class PoseVizGLSide:
         if self.gpu_encode:
             from framepump.video_writing_gl import GLVideoWriter
 
-            self.video_writer = GLVideoWriter()
+            # 'auto' selects GLX vs CUDA from the DISPLAY env var, which says
+            # nothing about a standalone EGL context: state it explicitly.
+            self.video_writer = GLVideoWriter(
+                backend='cuda' if self._standalone_egl else 'auto'
+            )
         else:
             self.video_writer = framepump.VideoWriter()
 
@@ -401,7 +390,79 @@ class PoseVizGLSide:
         self._message_pump()
 
         # Cleanup
-        glfw.terminate()
+        if self.window is not None:
+            glfw.terminate()
+
+    def _create_headless_context(self):
+        """Create a GL context without a visible window.
+
+        A standalone EGL context is preferred: it needs no display server and
+        its device is chosen explicitly, so on hybrid-GPU machines it can
+        target the NVIDIA card regardless of which GPU drives the desktop. An
+        invisible GLFW window is the fallback, whose context lands on whatever
+        GPU the display server uses.
+        """
+        import moderngl
+
+        ctx = None
+        try:
+            ctx = self._create_egl_context()
+        except Exception:
+            logger.info(
+                "Standalone EGL context unavailable; falling back to an "
+                "invisible GLFW window.",
+                exc_info=True,
+            )
+
+        if ctx is not None:
+            # The GLX-based encoding path cannot work with a standalone EGL
+            # context; the video writer must use its CUDA backend (see below).
+            self._standalone_egl = True
+            return ctx
+
+        width, height = self.resolution
+        if glfw.init():
+            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+            glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+            glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+            self.window = glfw.create_window(width, height, "PoseViz Headless", None, None)
+        if self.window is None:
+            raise RuntimeError(
+                "Could not create a headless OpenGL context: standalone EGL "
+                "failed and no display server is available for GLFW."
+            )
+        glfw.make_context_current(self.window)
+        return moderngl.create_context()
+
+    def _create_egl_context(self):
+        """Create a standalone EGL context, preferring an NVIDIA device.
+
+        With gpu_encode, NVENC requires the context on an NVIDIA GPU; if the
+        default EGL device is not NVIDIA, the other devices are searched.
+        """
+        import moderngl
+
+        if self.egl_device_index is not None:
+            return moderngl.create_context(
+                standalone=True, backend='egl', device_index=self.egl_device_index
+            )
+        ctx = moderngl.create_context(standalone=True, backend='egl')
+        if self.gpu_encode and 'NVIDIA' not in ctx.info.get('GL_VENDOR', ''):
+            for idx in range(1, 8):
+                try:
+                    cand = moderngl.create_context(
+                        standalone=True, backend='egl', device_index=idx
+                    )
+                except Exception:
+                    break
+                if 'NVIDIA' in cand.info.get('GL_VENDOR', ''):
+                    logger.info(f"Using EGL device {idx} (NVIDIA) for GPU video encoding.")
+                    ctx.release()
+                    return cand
+                cand.release()
+        return ctx
 
     def _message_pump(self):
         """Process messages at full speed without a visible window.
@@ -616,6 +677,7 @@ class PoseVizGLSide:
             self.i_pred_frame = 0
             if msg.video_path is not None:
                 try:
+                    self._check_gpu_encode_context()
                     # GLVideoWriter doesn't have use_gpu param, regular VideoWriter does
                     from framepump.video_writing_gl import GLVideoWriter
 
@@ -751,6 +813,24 @@ class PoseVizGLSide:
             )
         except Exception:
             logger.exception("Could not report the fault to the producer process.")
+
+    def _check_gpu_encode_context(self):
+        """Fail fast if GPU encoding cannot work on the current GL context."""
+        from framepump.video_writing_gl import GLVideoWriter
+
+        if not isinstance(self.video_writer, GLVideoWriter):
+            return
+        vendor = self.ctx.info.get('GL_VENDOR', '')
+        renderer_name = self.ctx.info.get('GL_RENDERER', '')
+        if 'NVIDIA' not in vendor:
+            raise RuntimeError(
+                f"gpu_encode=True requires the OpenGL context to be on an NVIDIA "
+                f"GPU (NVENC), but the current context is on: {renderer_name} "
+                f"({vendor}). Options: use headless=True (EGL context on the "
+                f"NVIDIA GPU); or set __NV_PRIME_RENDER_OFFLOAD=1 and "
+                f"__GLX_VENDOR_LIBRARY_NAME=nvidia before starting (hybrid-GPU "
+                f"machines); or pass gpu_encode=False for CPU encoding."
+            )
 
     def _record_camera_trajectory(self):
         """Record the effective view camera of the current frame, if requested."""

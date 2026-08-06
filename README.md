@@ -47,6 +47,22 @@ visualization stays best-effort and never interrupts your loop.
 `close()` returns a list of `poseviz.SequenceReport` objects, one per output sequence,
 with the video path and the number of frames written.
 
+## Headless and GPU Notes
+
+- `headless=True` (or auto-detection when `DISPLAY`/`WAYLAND_DISPLAY` are unset) uses a
+  standalone EGL context: no display server is needed, and on hybrid-GPU machines
+  (e.g., AMD display GPU + NVIDIA compute GPU) the NVIDIA card is targeted for NVENC.
+  There is no need to unset `DISPLAY` manually; the `egl_device_index` parameter
+  overrides the device selection if needed.
+- `gpu_encode=True` (default) requires the OpenGL context to be on an NVIDIA GPU. In
+  windowed mode on hybrid-GPU machines, the window usually lands on the display GPU;
+  starting a video output then raises an error immediately, listing the remedies: start
+  the process with `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia`, use
+  headless mode, or pass `gpu_encode=False` for CPU encoding.
+- `gpu_frames=True` accepts PyTorch CUDA tensors or any DLPack-compatible frames (CuPy,
+  JAX, ...), keeping the whole decode → inference → visualization → encode chain on the
+  GPU.
+
 ## Installation
 
 ```bash

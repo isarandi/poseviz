@@ -24,7 +24,7 @@ dependencies = [
     'glfw',
     'deltacamera>=0.7.0',
     # GLVideoWriter and the start_sequence(gpu=...) API require 0.2.0
-    'framepump>=0.2.0',
+    'framepump>=0.3.1',
     'simplepyutils',
     'numba',
 ]

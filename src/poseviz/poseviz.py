@@ -81,6 +81,7 @@ class PoseViz(AbstractContextManager):
         gpu_encode=True,
         fullscreen=False,
         gpu_frames=False,
+        egl_device_index=None,
     ):
         """The main class that creates a visualizer process, and provides an interface to update
         the visualization state.
@@ -187,15 +188,26 @@ class PoseViz(AbstractContextManager):
                 where the camera is looking.
             headless: Whether to render without a visible window. If None (default),
                 auto-detected from the environment: headless if neither DISPLAY nor
-                WAYLAND_DISPLAY is set, otherwise windowed.
+                WAYLAND_DISPLAY is set, otherwise windowed. Headless rendering uses a
+                standalone EGL context (no display server needed; works regardless of
+                DISPLAY, and on hybrid-GPU machines it targets the NVIDIA card), with
+                an invisible window as fallback if EGL is unavailable.
             gpu_encode (bool): Whether to use GPU-accelerated video encoding (NVENC). If
-                False, falls back to CPU encoding.
+                False, falls back to CPU encoding. NVENC requires the OpenGL context to
+                be on an NVIDIA GPU; if it is not (typical for windowed mode on
+                hybrid-GPU machines, where the display server runs on the integrated
+                GPU), starting a video output raises an error that lists the remedies
+                (PRIME render offload env vars, headless mode, or gpu_encode=False).
             fullscreen (bool): Whether to start the window in fullscreen mode.
             gpu_frames (bool): Whether frames are GPU tensors instead of NumPy arrays.
                 Accepts PyTorch CUDA tensors or any DLPack-compatible object (CuPy, JAX,
                 etc.). Must be set at init time as it determines the frame transfer
                 mechanism (CUDA IPC instead of shared memory ring buffers).
                 Enables GPU-side image downscaling and undistortion.
+            egl_device_index (int): EGL device index to use for the headless GL
+                context. If None (default), the default EGL device is used, except
+                that with ``gpu_encode`` the devices are searched for an NVIDIA GPU.
+                Only relevant in headless mode.
         """
 
         if headless is None:
@@ -294,6 +306,7 @@ class PoseViz(AbstractContextManager):
                 fullscreen,
                 paused,
                 self.resume_value,
+                egl_device_index,
             ),
             daemon=True,
         )

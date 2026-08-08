@@ -78,7 +78,8 @@ def gpu_downscale_and_undistort(view_info, downscale_factor):
 
     Takes a ViewInfo with a CUDA tensor (or DLPack) frame, performs resize+undistort
     on GPU via deltacamera.pt.reproject_image (single grid_sample kernel), and returns
-    a ViewInfo where frame is a CUDA tensor (H, W, 3) uint8.
+    a ViewInfo where frame is a CUDA tensor (H, W, 3) uint8. When the remap would be
+    an identity (same size, no distortion), the frame is copied instead of resampled.
     """
     import torch
     import deltacamera.pt as dpt
@@ -86,12 +87,22 @@ def gpu_downscale_and_undistort(view_info, downscale_factor):
     frame = view_info.frame
     if not isinstance(frame, torch.Tensor):
         frame = torch.from_dlpack(frame)
-    if not frame.is_contiguous():
-        frame = frame.contiguous()
 
     h, w = frame.shape[:2]
     new_h = round(h / downscale_factor)
     new_w = round(w / downscale_factor)
+
+    if (new_h, new_w) == (h, w) and not view_info.camera.has_distortion():
+        # The remap would be an identity: one copy instead of the three-pass
+        # float/grid_sample/byte reproject. Must stay a copy rather than a
+        # passthrough: the input may be short-lived decoder memory (e.g. a
+        # reused zero-copy buffer) and crossing to the visualizer process via
+        # CUDA IPC requires torch-allocated storage.
+        view_info.frame = frame.clone() if frame.is_contiguous() else frame.contiguous()
+        return view_info
+
+    if not frame.is_contiguous():
+        frame = frame.contiguous()
 
     gpu_cam = dpt.Camera.from_numpy(view_info.camera, device=frame.device)
     new_cam = gpu_cam.image_resized((new_h, new_w))

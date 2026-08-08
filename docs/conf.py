@@ -38,8 +38,8 @@ bibtex_footbibliography_header = ".. rubric:: References"
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3', None),
     'numpy': ('https://numpy.org/doc/stable/', None),
-    'deltacamera': ('https://deltacamera.readthedocs.io/', None),
-    'framepump': ('https://framepump.readthedocs.io/', None),
+    'deltacamera': ('https://deltacamera.readthedocs.io/en/latest/', None),
+    'framepump': ('https://framepump.readthedocs.io/en/latest/', None),
 }
 
 github_username = 'isarandi'

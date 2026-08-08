@@ -26,8 +26,15 @@ and writes the video.
 You can override the auto-detection by passing ``headless=True`` or
 ``headless=False`` explicitly.
 
-Headless mode creates an invisible GLFW window to obtain an OpenGL context,
-then renders to an offscreen framebuffer. No window is ever shown on screen.
+Headless mode obtains its OpenGL context directly from EGL (standalone, no
+display server involved) and renders to an offscreen framebuffer. This works
+regardless of whether ``DISPLAY`` is set; if EGL is unavailable, an invisible
+window is used as fallback. No window is ever shown on screen.
+
+On multi-GPU machines (e.g. a hybrid desktop with an AMD display GPU and an
+NVIDIA compute GPU), the EGL devices are searched for an NVIDIA GPU when
+``gpu_encode`` is enabled, so NVENC encoding works no matter which GPU drives
+the desktop. Pass ``egl_device_index`` to select the EGL device manually.
 
 Headless mode is typically combined with video recording — without it, the
 rendered frames have nowhere to go.
@@ -65,9 +72,9 @@ Significantly slower, but works on any machine with OpenGL support.
 Choosing the output resolution
 ------------------------------
 
-In headless mode, ``resolution`` controls the size of the invisible window
-(used as a fallback), while ``render_resolution`` controls the actual
-rendering size::
+In headless mode, ``render_resolution`` controls the actual rendering size;
+``resolution`` serves only as its default when ``render_resolution`` is not
+set::
 
     with poseviz.PoseViz(
         ...,

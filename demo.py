@@ -1,11 +1,7 @@
-import time
-
-import smplfitter.np
-
-import poseviz
-
 import numpy as np
 import deltacamera
+
+import poseviz
 
 
 def main():
@@ -18,23 +14,36 @@ def main():
 
     with poseviz.PoseViz(joint_names, joint_edges) as viz:
         # Iterate over the frames of e.g. a video
-        for i in range(1):
+        for i in range(300):
             # Get the current frame
             frame = np.zeros([720, 1280, 3], np.uint8)
 
-            # Make predictions here
-            # ...
+            # Make predictions here (dummy animated data in this demo)
+            t = i / 30
+            poses = np.array(
+                [
+                    [
+                        [100 * np.cos(t), 100 + 20 * np.sin(2 * t), 2000],
+                        [-100 * np.cos(t), 100, 2000],
+                    ]
+                ],
+                np.float32,
+            )
 
             # Update the visualization
             viz.update(
                 frame=frame,
                 boxes=np.array([[10, 20, 100, 100]], np.float32),
-                poses=np.array([[[100, 100, 2000], [-100, 100, 2000]]], np.float32),
+                poses=poses,
                 camera=deltacamera.Camera.from_fov(55, frame.shape[:2]),
             )
 
 
 def main_smpl():
+    import time
+
+    import smplfitter.np
+
     smpl_canonical = np.load(
         "/work/sarandi/projects/localizerfields/canonical_vertices_smpl.npy"
     ) * [1, -1, -1] * 1000 + [0, 0, 3000]
@@ -60,4 +69,4 @@ def main_smpl():
 
 
 if __name__ == "__main__":
-    main_smpl()
+    main()

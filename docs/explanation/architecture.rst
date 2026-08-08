@@ -169,6 +169,19 @@ Backpressure works through queue capacity. When the queue is full:
 The ``task_done()`` protocol allows ``close()`` to wait until all queued
 messages are processed before terminating the visualizer.
 
+Fault reporting
+~~~~~~~~~~~~~~~
+
+A separate queue carries information in the opposite direction, from the
+visualizer process back to the producer. Failures that make a requested
+output impossible (starting/writing/finalizing the video, saving the camera
+trajectory, or an unexpected death of the visualizer process) are sent as
+``Fault`` messages and re-raised in the caller as ``poseviz.VisualizerError``
+at the next API call. When a sequence ends, a ``SequenceReport`` (video path,
+frames written, error if any) travels the same channel; ``close()`` returns
+the collected reports. The renderer keeps consuming scene updates after a
+failure, so the producer never blocks on a failed sequence.
+
 Frame data lifecycle
 --------------------
 

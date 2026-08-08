@@ -57,6 +57,31 @@ Or when starting mid-session::
 
     viz.new_sequence_output('output.mp4', fps=30, audio_source_path='source.mp4')
 
+When writing fails
+------------------
+
+If a requested video cannot be produced (encoder failure, unwritable path,
+non-NVIDIA GL context with ``gpu_encode=True``), the error is raised in your
+process as ``poseviz.VisualizerError`` at the next API call — ``update``,
+``new_sequence_output``, ``finalize_sequence_output`` or ``close`` — carrying
+the visualizer-side traceback. A requested video to which zero frames were
+written also raises. The failure poisons only the current sequence: starting
+a new sequence output resets the state, so a batch loop can catch the error
+and continue with the next video::
+
+    for clip in clips:
+        try:
+            viz.new_sequence_output(clip.out_path, fps=30)
+            for frame in clip:
+                viz.update(...)
+            viz.finalize_sequence_output()
+        except poseviz.VisualizerError as e:
+            print(f'{clip}: {e}')
+
+``close()`` returns one ``poseviz.SequenceReport`` per sequence (video path,
+number of frames written, error if any), and a summary line is logged for
+each successfully written video.
+
 GPU vs CPU encoding
 -------------------
 

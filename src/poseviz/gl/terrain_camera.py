@@ -1,3 +1,5 @@
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
@@ -18,6 +20,7 @@ class CameraState:
     elevation: float = 0.0
     distance: float = 0.0
     fov: float = 55.0
+    src_camera: Optional[object] = None
 
     @property
     def is_snapped(self) -> bool:
@@ -45,7 +48,12 @@ class TerrainCamera:
         self.azimuth = 0.0  # Horizontal angle around the up axis
         self.elevation = 0.0  # Vertical angle (0 = horizontal, positive = looking down)
         self.distance = 2500.0  # Distance from pivot
-        self.fov = 55.0  # Field of view in degrees
+        self.fov = 55.0  # VERTICAL field of view in degrees (free mode)
+        # Source camera of the current snap (with its image_shape). When set,
+        # to_deltacamera uses deltacamera's reframed(fit='contain') so the
+        # source frame fits fully in the viewport, whatever the orientation
+        # combination (portrait camera in landscape window and vice versa).
+        self.src_camera = None
         self.flying_mode = flying_mode
         self.world_up = tuple(world_up)
         # Orthonormal basis of the world: azimuth/elevation are spherical
@@ -81,8 +89,31 @@ class TerrainCamera:
         # Pivot is some distance in front of camera (where skeleton likely is)
         self.pivot = cam.t + cam.R[2] * 2500
         self.distance = 2500.0
-        if imshape is not None:
-            self.fov = float(np.clip(cam.get_fov(imshape), 10.0, 120.0))
+        # Reference image shape for the camera's intrinsics. The camera's own
+        # image_shape is authoritative: intrinsics and image_shape of one
+        # Camera object are consistent by construction, while an externally
+        # passed frame shape can be in DIFFERENT units (PoseViz downscales
+        # frames+cameras per view, with a different factor for the main
+        # view — pairing a native-K camera with a downscaled frame shape
+        # produced spurious fov collapses, i.e. spontaneous zoom-ins).
+        if cam.image_shape is not None:
+            ref_shape = tuple(cam.image_shape[:2])
+        elif imshape is not None:
+            ref_shape = tuple(imshape[:2])
+        else:
+            ref_shape = None
+        if ref_shape is not None:
+            # Keep the source camera: to_deltacamera derives the viewport
+            # intrinsics from it via reframed(fit='contain'), which is
+            # aspect-safe for any source/viewport orientation combination.
+            self.src_camera = cam.copy(image_shape=ref_shape)
+            fy = float(cam.intrinsic_matrix[1, 1])
+            fov_v = np.degrees(2.0 * np.arctan(ref_shape[0] / (2.0 * fy)))
+            self.fov = float(np.clip(fov_v, 10.0, 120.0))
+        self._camlog(
+            f'init_from_camera pos={np.round(cam.t, 0)} passed_imshape={imshape} '
+            f'ref_shape={ref_shape} fov={self.fov:.2f}'
+        )
 
         # Extract azimuth and elevation from camera forward direction
         forward = cam.R[2]
@@ -122,10 +153,20 @@ class TerrainCamera:
         return camera_to_gl_mvp(self.to_deltacamera(imshape), imshape)
 
     def to_deltacamera(self, imshape: tuple) -> "deltacamera.Camera":
-        """Build a deltacamera.Camera matching the current view state."""
+        """Build a deltacamera.Camera matching the current view state.
+
+        With a snapped source camera: CONTAIN semantics via reframed() — the
+        viewport shows the source frame fully, for any combination of source
+        and viewport orientations. Without one: self.fov as vertical fov.
+        """
+        if self.src_camera is not None:
+            base = self.src_camera.reframed(imshape, fit='contain')
+        else:
+            base = deltacamera.Camera.from_fov(
+                self.fov, imshape, world_up=self.world_up, side='height'
+            )
         return (
-            deltacamera.Camera.from_fov(self.fov, imshape, world_up=self.world_up)
-            .copy(optical_center=self.get_position())
+            base.copy(optical_center=self.get_position())
             .turned_towards(target_world_point=self.pivot)
         )
 
@@ -224,6 +265,7 @@ class TerrainCamera:
         self._commit_pending_checkpoint()
         factor = 0.9 if direction > 0 else 1.1
         self.distance = np.clip(self.distance * factor, 100, 50000)
+        self._camlog(f'zoom_scroll dir={direction}')
 
     def adjust_fov(self, delta: float):
         """Adjust field of view.
@@ -232,7 +274,15 @@ class TerrainCamera:
             delta: Degrees to add (negative = zoom in, positive = zoom out)
         """
         self._commit_pending_checkpoint()
-        self.fov = np.clip(self.fov + delta, 10.0, 120.0)
+        if self.src_camera is not None:
+            # manual fov override takes over from the snapped-source framing;
+            # seed it from the current effective vertical fov for continuity
+            fy = float(self.src_camera.intrinsic_matrix[1, 1])
+            h_s = self.src_camera.image_shape[0]
+            self.fov = float(np.degrees(2.0 * np.arctan(h_s / (2.0 * fy))))
+            self.src_camera = None
+        self.fov = float(np.clip(self.fov + delta, 10.0, 120.0))
+        self._camlog(f'adjust_fov delta={delta} -> fov={self.fov:.2f}')
 
     # --- Flying controls ---
 
@@ -291,6 +341,7 @@ class TerrainCamera:
             elevation=self.elevation,
             distance=self.distance,
             fov=self.fov,
+            src_camera=self.src_camera,
         )
 
     def set_state(self, state: CameraState):
@@ -303,14 +354,25 @@ class TerrainCamera:
             self.elevation = state.elevation
             self.distance = state.distance
             self.fov = state.fov
+            self.src_camera = state.src_camera
+        self._camlog(f'set_state snapped_to={state.snapped_to} fov={self.fov:.2f}')
 
     def snap_to(self, camera_index: int):
         """Snap to follow a display camera."""
         self.snapped_to = camera_index
+        self._camlog(f'snap_to {camera_index}')
 
     def unsnap(self):
         """Stop following display camera, keep current position."""
         self.snapped_to = None
+        self._camlog('unsnap')
+
+    def _camlog(self, msg):
+        """Timestamped camera-event log, enabled via POSEVIZ_CAMLOG=1."""
+        if os.environ.get('POSEVIZ_CAMLOG'):
+            print(f'[camlog {time.monotonic():9.3f}] {msg} | dist={self.distance:.0f} '
+                  f'fov={self.fov:.2f} pos={np.round(self.get_position(), 0) if self.initialized else "-"}',
+                  flush=True)
 
     @property
     def is_snapped(self) -> bool:

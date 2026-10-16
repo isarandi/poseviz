@@ -22,8 +22,8 @@ dependencies = [
     'numpy',
     'moderngl',
     'glfw',
-    'deltacamera>=0.7.0',
-    # The GLVideoWriter backend= parameter requires 0.4.0
+    'deltacamera>=0.9.0',  # Camera.reframed()
+    # video_writing_gl.available_backends() requires 0.5.0
     'framepump>=0.5.0',
     'simplepyutils',
     'numba',

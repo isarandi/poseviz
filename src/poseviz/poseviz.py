@@ -78,7 +78,7 @@ class PoseViz(AbstractContextManager):
         max_pixels_per_frame=1920 * 1080,
         flying_mode="camera",
         headless=None,
-        gpu_encode=True,
+        gpu_encode=None,
         fullscreen=False,
         gpu_frames=False,
         egl_device_index=None,
@@ -192,12 +192,16 @@ class PoseViz(AbstractContextManager):
                 standalone EGL context (no display server needed; works regardless of
                 DISPLAY, and on hybrid-GPU machines it targets the NVIDIA card), with
                 an invisible window as fallback if EGL is unavailable.
-            gpu_encode (bool): Whether to use GPU-accelerated video encoding (NVENC). If
-                False, falls back to CPU encoding. NVENC requires the OpenGL context to
-                be on an NVIDIA GPU; if it is not (typical for windowed mode on
-                hybrid-GPU machines, where the display server runs on the integrated
-                GPU), starting a video output raises an error that lists the remedies
-                (PRIME render offload env vars, headless mode, or gpu_encode=False).
+            gpu_encode (bool or None): Whether to encode the output video zero-copy from
+                the rendered GL texture with NVENC. None (default) does so when possible
+                (the OpenGL context is on an NVIDIA GPU and framepump has the needed
+                NVENC backend; headless EGL rendering needs ``framepump[cuda]``)
+                and otherwise reads the frames back and encodes them with
+                ``framepump.VideoWriter``, logging why. True insists on the zero-copy
+                path: starting a video output raises an error that lists the remedies
+                if it cannot work (e.g. windowed mode on hybrid-GPU machines, where the
+                display server runs on the integrated GPU). False always uses
+                ``framepump.VideoWriter`` with CPU encoding.
             fullscreen (bool): Whether to start the window in fullscreen mode.
             gpu_frames (bool): Whether frames are GPU tensors instead of NumPy arrays.
                 Accepts PyTorch CUDA tensors or any DLPack-compatible object (CuPy, JAX,
@@ -206,7 +210,8 @@ class PoseViz(AbstractContextManager):
                 Enables GPU-side image downscaling and undistortion.
             egl_device_index (int): EGL device index to use for the headless GL
                 context. If None (default), the default EGL device is used, except
-                that with ``gpu_encode`` the devices are searched for an NVIDIA GPU.
+                that unless ``gpu_encode`` is False the devices are searched for an
+                NVIDIA GPU.
                 Only relevant in headless mode.
         """
 

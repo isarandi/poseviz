@@ -32,9 +32,9 @@ regardless of whether ``DISPLAY`` is set; if EGL is unavailable, an invisible
 window is used as fallback. No window is ever shown on screen.
 
 On multi-GPU machines (e.g. a hybrid desktop with an AMD display GPU and an
-NVIDIA compute GPU), the EGL devices are searched for an NVIDIA GPU when
-``gpu_encode`` is enabled, so NVENC encoding works no matter which GPU drives
-the desktop. Pass ``egl_device_index`` to select the EGL device manually.
+NVIDIA compute GPU), the EGL devices are searched for an NVIDIA GPU unless
+``gpu_encode=False``, so NVENC encoding works no matter which GPU drives the
+desktop. Pass ``egl_device_index`` to select the EGL device manually.
 
 Headless mode is typically combined with video recording — without it, the
 rendered frames have nowhere to go.
@@ -42,20 +42,30 @@ rendered frames have nowhere to go.
 GPU-accelerated pipeline
 ------------------------
 
-With ``headless=True`` and ``gpu_encode=True`` (the latter is the default),
-the full pipeline stays on the GPU:
+With ``headless=True``, the full pipeline can stay on the GPU:
 
 1. OpenGL renders the scene to a framebuffer object (FBO)
 2. The FBO texture is passed to NVENC via CUDA-OpenGL interop
 3. The encoded video is written to disk
 
 No pixel data is ever copied to the CPU. This is the fastest path for batch
-rendering.
+rendering. It needs an NVIDIA GPU and framepump's CUDA bindings::
+
+    pip install 'framepump[cuda]'
 
 CPU fallback
 ------------
 
-On machines without NVENC support::
+With the default ``gpu_encode=None``, PoseViz uses the zero-copy path only when
+it can work here (EGL context on an NVIDIA GPU, CUDA bindings installed). Otherwise
+it logs the reason, reads the pixels back from the GPU each frame and encodes them
+with ``framepump.VideoWriter`` (NVENC from system memory where available, else the
+CPU). Headless video output therefore works on any machine with OpenGL support,
+also without an NVIDIA GPU.
+
+``gpu_encode=True`` insists on the zero-copy path and raises an error naming the
+remedies when it cannot be used; ``gpu_encode=False`` always reads back and encodes
+on the CPU::
 
     with poseviz.PoseViz(
         ...,
@@ -65,9 +75,6 @@ On machines without NVENC support::
         out_fps=30,
     ) as viz:
         ...
-
-This reads pixels back from the GPU each frame and encodes on the CPU.
-Significantly slower, but works on any machine with OpenGL support.
 
 Choosing the output resolution
 ------------------------------

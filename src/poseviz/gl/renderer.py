@@ -1,5 +1,6 @@
 import itertools
 import logging
+import os
 import queue
 import traceback
 
@@ -62,7 +63,7 @@ class PoseVizGLSide:
         frame_rings,
         flying_mode="camera",
         headless=False,
-        gpu_encode=True,
+        gpu_encode=None,
         fullscreen=False,
         paused=False,
         resume_flag=None,
@@ -199,13 +200,7 @@ class PoseVizGLSide:
         # Create blit shader for scaling FBO to screen
         self._init_blit_shader()
 
-        # Use GLVideoWriter for zero-copy encoding if gpu_encode, else framepump
-        if self.gpu_encode:
-            from framepump.video_writing_gl import GLVideoWriter
-
-            self.video_writer = GLVideoWriter()
-        else:
-            self.video_writer = framepump.VideoWriter()
+        self.video_writer = self._create_video_writer()
 
         # Set up callbacks
         glfw.set_key_callback(self.window, self._on_key)
@@ -374,17 +369,7 @@ class PoseVizGLSide:
 
         self._init_renderers()
 
-        # Use GLVideoWriter for zero-copy encoding if gpu_encode, else framepump
-        if self.gpu_encode:
-            from framepump.video_writing_gl import GLVideoWriter
-
-            # 'auto' selects GLX vs CUDA from the DISPLAY env var, which says
-            # nothing about a standalone EGL context: state it explicitly.
-            self.video_writer = GLVideoWriter(
-                backend='cuda' if self._standalone_egl else 'auto'
-            )
-        else:
-            self.video_writer = framepump.VideoWriter()
+        self.video_writer = self._create_video_writer()
 
         # Simple loop - block-wait for messages, no spinning
         self._message_pump()
@@ -439,8 +424,8 @@ class PoseVizGLSide:
     def _create_egl_context(self):
         """Create a standalone EGL context, preferring an NVIDIA device.
 
-        With gpu_encode, NVENC requires the context on an NVIDIA GPU; if the
-        default EGL device is not NVIDIA, the other devices are searched.
+        Unless gpu_encode is False, NVENC encoding needs the context on an NVIDIA GPU;
+        if the default EGL device is not NVIDIA, the other devices are searched.
         """
         import moderngl
 
@@ -449,7 +434,7 @@ class PoseVizGLSide:
                 standalone=True, backend='egl', device_index=self.egl_device_index
             )
         ctx = moderngl.create_context(standalone=True, backend='egl')
-        if self.gpu_encode and 'NVIDIA' not in ctx.info.get('GL_VENDOR', ''):
+        if self.gpu_encode is not False and 'NVIDIA' not in ctx.info.get('GL_VENDOR', ''):
             for idx in range(1, 8):
                 try:
                     cand = moderngl.create_context(
@@ -686,7 +671,7 @@ class PoseVizGLSide:
                         msg.video_path,
                         fps=msg.fps if msg.fps is not None else 30,
                         audio_source_path=msg.audio_source_path,
-                        **({} if is_gl else dict(gpu=True)),
+                        **({} if is_gl else dict(gpu=self.gpu_encode is not False)),
                     )
                 except Exception as e:
                     self._sequence_fault("starting the video output", e)
@@ -813,6 +798,39 @@ class PoseVizGLSide:
             )
         except Exception:
             logger.exception("Could not report the fault to the producer process.")
+
+    def _create_video_writer(self):
+        """Zero-copy NVENC writer from GL textures if possible, else framepump's VideoWriter.
+
+        ``gpu_encode=True`` insists on the GL path (errors surface when a video output
+        starts); ``False`` always uses VideoWriter; ``None`` uses the GL path only if the
+        context is on an NVIDIA GPU and framepump can encode with the needed backend
+        here, so that video output also works on machines without NVENC or without the
+        CUDA bindings.
+        """
+        from framepump.video_writing_gl import GLVideoWriter, available_backends
+
+        # framepump's 'auto' picks GLX vs CUDA from the DISPLAY env var, which says
+        # nothing about a standalone EGL context: state the backend explicitly there.
+        backend = 'cuda' if self._standalone_egl else 'auto'
+        if self.gpu_encode is None:
+            needed = 'cuda' if self._standalone_egl or not os.environ.get('DISPLAY') else 'glx'
+            vendor = self.ctx.info.get('GL_VENDOR', '')
+            if 'NVIDIA' not in vendor:
+                reason = f'the OpenGL context is on {vendor or "an unknown vendor"}'
+            elif needed not in available_backends():
+                reason = (
+                    f"framepump cannot use its {needed!r} NVENC backend here"
+                    + (" (pip install 'framepump[cuda]')" if needed == 'cuda' else '')
+                )
+            else:
+                return GLVideoWriter(backend=backend)
+            logger.info(f'Video output: zero-copy GPU encoding unavailable ({reason}); '
+                        f'reading frames back for framepump.VideoWriter instead.')
+            return framepump.VideoWriter()
+        if self.gpu_encode:
+            return GLVideoWriter(backend=backend)
+        return framepump.VideoWriter()
 
     def _check_gpu_encode_context(self):
         """Fail fast if GPU encoding cannot work on the current GL context."""

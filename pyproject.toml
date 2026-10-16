@@ -29,6 +29,9 @@ dependencies = [
     'numba',
 ]
 
+[project.scripts]
+poseviz = "poseviz.player:main"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 

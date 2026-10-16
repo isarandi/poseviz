@@ -24,11 +24,19 @@ class TextureMixin:
         if self.texture is not None:
             self.texture.release()
         self.texture = self.ctx.texture((width, height), components)
-        self.texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        # Mipmapped, trilinear and anisotropic: camera panels are shown far
+        # smaller than the frame resolution, and without mipmaps that
+        # minification aliases fine image detail into moiré. The mip levels
+        # are allocated here, before any CUDA-GL registration of the texture
+        # (the registration must see the final storage); _update_texture
+        # regenerates them after every upload.
+        self.texture.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+        self.texture.anisotropy = 16.0
         # Clamp to edge: with wrap-around, the outermost half-texel would blend
         # with the opposite edge of the image.
         self.texture.repeat_x = False
         self.texture.repeat_y = False
+        self.texture.build_mipmaps()
         self._texture_shape = (height, width)
 
     def _update_texture(self, image):
@@ -59,6 +67,7 @@ class TextureMixin:
                 from poseviz.gl.cuda_gl_interop import CudaGLTextureWriter
                 self._cuda_writer = CudaGLTextureWriter()
             self._cuda_writer.write(image, self.texture)
+        self.texture.build_mipmaps()
 
     def _bind_texture(self, slot: int = 0, uniform: str = "u_texture"):
         """Bind texture and set sampler uniform."""

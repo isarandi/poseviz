@@ -4,6 +4,9 @@ without framepump's CUDA bindings, PoseViz falls back to reading the frames back
 writing them with framepump.VideoWriter. gpu_encode=True must instead fail with a
 VisualizerError (not hang) when the zero-copy path cannot work.
 
+Both paths must also write the video upright (they differ in how the rendered image
+reaches the encoder).
+
 Run: python tests/gpu_encode_auto_test.py
 Run it in an environment with and in one without ``framepump[nvenc-cuda]`` to cover
 both branches; each scenario runs in a subprocess under a timeout.
@@ -31,6 +34,8 @@ def main():
         assert res.returncode == 0, res.stdout + res.stderr
         n = count_frames(out)
         assert n == N_FRAMES, f"expected {N_FRAMES} frames, got {n}"
+        top, bottom = red_of_halves(out)
+        assert top > bottom + 100, f"video upside down: red top {top:.0f}, bottom {bottom:.0f}"
         # Without the CUDA backend the zero-copy path cannot run headless (the strict
         # scenario below proves it), so a complete video here came from the fallback.
         path = "zero-copy NVENC" if "cuda" in backends else "read-back fallback"
@@ -62,6 +67,7 @@ def scenario(mode, out):
     poses = [np.array([[0, 100, 2000], [50, 0, 2000], [0, -100, 2000],
                        [-100, 100, 2000], [-50, 0, 2000], [0, -100, 2000]], np.float32)]
     frame = np.zeros([480, 640, 3], np.uint8)
+    frame[:240] = (255, 0, 0)  # red top half: the recorded video must keep it on top
     gpu_encode = None if mode == "auto" else True
     viz = poseviz.PoseViz(JOINT_NAMES, JOINT_EDGES, headless=True, gpu_encode=gpu_encode)
     try:
@@ -77,6 +83,16 @@ def scenario(mode, out):
         raise
     if mode == "strict":
         raise AssertionError("gpu_encode=True should have failed without the CUDA backend")
+
+
+def red_of_halves(path):
+    """Mean red of the image's top and bottom thirds in the last frame of the video."""
+    import av
+
+    with av.open(path) as c:
+        f = list(c.decode(video=0))[-1].to_ndarray(format="rgb24")
+    h = f.shape[0]
+    return f[: h // 3, :, 0].mean(), f[-h // 3 :, :, 0].mean()
 
 
 def count_frames(path):

@@ -1319,12 +1319,14 @@ class PoseVizGLSide:
                 self.ctx.finish()
                 self.video_writer.append_data(self.fbo.color_attachments[0])
             else:
-                # CPU fallback: read pixels and flip
+                # CPU fallback: read the pixels back
                 width, height = self.render_resolution if self.fbo else self.resolution
                 if self.fbo is not None:
+                    # The FBO is rendered y-flipped (flip_y in the render pass), so its
+                    # rows already come out top row first, as the video needs (the same
+                    # property the zero-copy path relies on)
                     data = self.fbo.read(components=3)
                     frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))
-                    frame = frame[::-1]  # Flip for correct video orientation
                 else:
                     data = self.ctx.screen.read(components=3)
                     frame = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 3))

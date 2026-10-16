@@ -195,8 +195,9 @@ class PoseViz(AbstractContextManager):
                 ``'horizontal'``: forward/back stay in the horizontal plane regardless of
                 where the camera is looking.
             headless: Whether to render without a visible window. If None (default),
-                auto-detected from the environment: headless if neither DISPLAY nor
-                WAYLAND_DISPLAY is set, otherwise windowed. Headless rendering uses a
+                auto-detected from the environment: on Linux, headless if neither DISPLAY
+                nor WAYLAND_DISPLAY is set, otherwise windowed; on macOS and Windows,
+                windowed. Headless rendering uses a
                 standalone EGL context (no display server needed; works regardless of
                 DISPLAY, and on hybrid-GPU machines it targets the NVIDIA card), with
                 an invisible window as fallback if EGL is unavailable.
@@ -224,7 +225,11 @@ class PoseViz(AbstractContextManager):
         """
 
         if headless is None:
-            headless = not os.environ.get('DISPLAY') and not os.environ.get('WAYLAND_DISPLAY')
+            # DISPLAY/WAYLAND_DISPLAY only mean something on Linux; macOS and Windows
+            # sessions draw windows without them (and never set them)
+            headless = sys.platform.startswith('linux') and not (
+                os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')
+            )
 
         self.gpu_frames = gpu_frames
         self._closed = False

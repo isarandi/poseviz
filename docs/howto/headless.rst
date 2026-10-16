@@ -8,8 +8,9 @@ Automatic headless detection
 ----------------------------
 
 By default (``headless=None``), PoseViz checks for a display server
-automatically. If neither ``DISPLAY`` (X11) nor ``WAYLAND_DISPLAY`` is set,
-it switches to headless mode. This means code that works on a desktop also
+automatically. On Linux, if neither ``DISPLAY`` (X11) nor ``WAYLAND_DISPLAY`` is
+set, it switches to headless mode. On macOS and Windows, which do not use these
+variables, it always opens a window. This means code that works on a desktop also
 works on a remote server without changes::
 
     with poseviz.PoseViz(

@@ -50,6 +50,7 @@ class PoseVizGLSide:
         draw_2d_pose,
         show_camera_wireframe,
         show_field_of_view,
+        mesh_opacity,
         resolution,
         render_resolution,
         use_virtual_display,
@@ -100,6 +101,7 @@ class PoseVizGLSide:
         self.draw_2d_pose = draw_2d_pose
         self.show_camera_wireframe = show_camera_wireframe
         self.show_field_of_view = show_field_of_view
+        self.mesh_opacity = mesh_opacity
         self.resolution = resolution  # Window/display resolution
         self.render_resolution = (
             render_resolution  # FBO/video resolution (can be larger)
@@ -542,6 +544,7 @@ class PoseVizGLSide:
                 show_camera_wireframe=self.show_camera_wireframe,
                 body_model_faces=self.body_model_faces,
                 image_plane_distance=self.image_plane_distance,
+                mesh_opacity=self.mesh_opacity,
             )
             for _ in range(self.n_views)
         ]
@@ -1251,7 +1254,12 @@ class PoseVizGLSide:
                 view_proj, view = viewport.get_matrices()
 
             ShaderRenderable._current_view = view.astype(np.float32).tobytes()
-            self._render_scene(view_proj)
+            # The FBO path renders y-flipped (flip_y above), which mirrors the
+            # winding of every triangle. Tell GL which winding is front-facing
+            # so that face culling (translucent mesh wireframes) selects the
+            # near skin on both paths.
+            self.ctx.front_face = "cw" if use_fbo else "ccw"
+            self._render_scene(view_proj, view)
 
         # Resolve multisampled FBO to regular FBO (for video encoding)
         if self.fbo_msaa is not None and self.fbo is not None:
@@ -1268,13 +1276,33 @@ class PoseVizGLSide:
             self.blit_vao.render()
             self.ctx.enable(self.ctx.DEPTH_TEST)  # Re-enable for next frame
 
-    def _render_scene(self, view_proj):
-        """Render the full scene with a given view-projection matrix."""
+    def _render_scene(self, view_proj, view):
+        """Render the full scene for one viewport.
+
+        Opaque geometry of all views first, then the translucent renderables
+        (image quads, translucent meshes) sorted back to front by their centre
+        (farthest from the eye first): alpha blending is order-dependent, so
+        this is what makes each of them dim exactly what lies behind it,
+        including each other, from any viewing direction. Object centres are
+        an approximation only where two translucent objects interpenetrate.
+        """
         if self.ground_renderer:
             self.ground_renderer.render(view_proj)
 
         for viz in self.view_visualizers:
-            viz.render(view_proj)
+            viz.render_opaque(view_proj)
+
+        # The view matrix is stored transposed (GL column-major layout, see
+        # transforms.camera_to_gl_view), so the camera position is the last
+        # ROW of its inverse, not the last column.
+        eye = np.linalg.inv(np.asarray(view, np.float64))[3, :3]
+        items = []  # (distance, unique index, renderable): the index keeps
+        for viz in self.view_visualizers:  # sorted() away from the renderables
+            for center, renderable in viz.translucent_items():
+                dist = np.linalg.norm(np.asarray(center, np.float64) - eye)
+                items.append((dist, len(items), renderable))
+        for _, _, renderable in sorted(items, reverse=True):
+            renderable.render(view_proj, eye=eye)
 
     def capture_frame(self):
         if self._seq_failure is not None or not self.video_writer.accepts_new_frames:

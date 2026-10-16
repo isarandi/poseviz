@@ -41,12 +41,17 @@ class ColorSource(ABC):
 
 
 class UniformColor(ColorSource):
-    """Single color for entire mesh."""
+    """Single color for entire mesh; ``opacity`` < 1 makes it translucent."""
 
     shader_name = "mesh"
 
-    def __init__(self, color: tuple):
+    def __init__(self, color: tuple, opacity: float = 1.0):
         self.color = color
+        self.opacity = float(opacity)
+
+    @property
+    def needs_blend(self) -> bool:
+        return self.opacity < 1.0
 
     def setup(self, ctx: moderngl.Context, max_vertices: int):
         pass  # No GPU resources needed
@@ -60,6 +65,7 @@ class UniformColor(ColorSource):
 
     def bind(self, program: moderngl.Program):
         program["u_color"].value = self.color
+        program["u_opacity"].value = self.opacity
 
     def release(self):
         pass

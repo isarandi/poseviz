@@ -28,6 +28,7 @@ class ViewVisualizer:
         show_camera_wireframe=True,
         body_model_faces=None,
         image_plane_distance=1000,
+        mesh_opacity=1.0,
     ):
         self.ctx = ctx
         self.joint_names, self.joint_edges = joint_info
@@ -36,6 +37,7 @@ class ViewVisualizer:
         self.show_field_of_view = show_field_of_view
         self.show_camera_wireframe = show_camera_wireframe
         self.image_plane_distance = image_plane_distance
+        self.mesh_opacity = mesh_opacity
 
         # Classify joints by side for coloring
         if self.joint_names is not None:
@@ -276,7 +278,11 @@ class ViewVisualizer:
         # Create new renderers if needed
         while len(mesh_renderers) < n_bodies:
             mesh_renderers.append(
-                MeshRenderable(self.ctx, self.body_model_faces, UniformColor(color))
+                MeshRenderable(
+                    self.ctx,
+                    self.body_model_faces,
+                    UniformColor(color, opacity=self.mesh_opacity),
+                )
             )
 
         # Destroy excess renderers
@@ -289,9 +295,48 @@ class ViewVisualizer:
                 verts = verts[:, :3]  # Strip uncertainty
             renderer.update(verts)
 
-    def render(self, view_proj):
-        """Render all components."""
-        # Render skeletons first (before transparent image)
+    def render(self, view_proj, eye=None):
+        """Render all components of this view alone (opaque, then translucent).
+
+        The scene renderer does not call this: it renders the opaque parts of
+        all views first and then the translucent renderables of all views
+        sorted back to front, so that each of them dims exactly what lies
+        behind it.
+        """
+        self.render_opaque(view_proj)
+        self.render_translucent(view_proj, eye)
+
+    def translucent_items(self):
+        """(centre_world, renderable) pairs of this view's translucent
+        renderables: the image quad and the meshes whose colour source needs
+        blending. The renderer sorts them by distance from the eye."""
+        items = []
+        quad = self.image_renderer
+        if quad is not None and quad.visible and quad.center_world is not None:
+            items.append((quad.center_world, quad))
+        for mesh in self._all_meshes():
+            if mesh.visible and self._is_translucent(mesh) and mesh.center_world is not None:
+                items.append((mesh.center_world, mesh))
+        return items
+
+    def render_translucent(self, view_proj, eye=None):
+        """This view's translucent renderables, back to front when ``eye`` is given."""
+        items = self.translucent_items()
+        if eye is not None:
+            eye = np.asarray(eye, np.float64)
+            items.sort(key=lambda item: -np.linalg.norm(item[0] - eye))
+        for _, renderable in items:
+            renderable.render(view_proj, eye=eye)
+
+    def _all_meshes(self):
+        return [*self.meshes_pred, *self.meshes_true, *self.meshes_alt]
+
+    @staticmethod
+    def _is_translucent(mesh):
+        return bool(getattr(mesh.color_source, "needs_blend", False))
+
+    def render_opaque(self, view_proj):
+        """Skeletons, opaque meshes and the camera wireframe."""
         if self.spheres_pred_left is not None:
             self.spheres_pred_left.render(view_proj)
             self.spheres_pred_mid.render(view_proj)
@@ -304,19 +349,11 @@ class ViewVisualizer:
             self.spheres_alt.render(view_proj)
             self.tubes_alt.render(view_proj)
 
-        # Render meshes
-        for mesh in self.meshes_pred:
-            mesh.render(view_proj)
-        for mesh in self.meshes_true:
-            mesh.render(view_proj)
-        for mesh in self.meshes_alt:
-            mesh.render(view_proj)
+        for mesh in self._all_meshes():
+            if not self._is_translucent(mesh):
+                mesh.render(view_proj)
 
-        # Render transparent image last (on top of skeleton)
-        if self.image_renderer:
-            self.image_renderer.render(view_proj)
-
-        # Render camera wireframe (tubes+spheres when highlighted, lines otherwise)
+        # Camera wireframe (tubes+spheres when highlighted, lines otherwise)
         if self.camera_wireframe:
             if self.highlight:
                 self.camera_wireframe_tubes.render(view_proj)

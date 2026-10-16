@@ -3,6 +3,7 @@
 in vec3 v_normal;
 
 uniform vec3 u_color;
+uniform float u_opacity;
 uniform mat4 u_view;
 
 out vec4 frag_color;
@@ -21,5 +22,5 @@ void main() {
                   + max(dot(n, l2), 0.0) * 0.5;
     float intensity = min(0.1 + diffuse, 1.0);
 
-    frag_color = vec4(u_color * intensity, 1.0);
+    frag_color = vec4(u_color * intensity, u_opacity);
 }

@@ -62,6 +62,7 @@ class PoseViz(AbstractContextManager):
         draw_2d_pose=False,
         show_camera_wireframe=True,
         show_field_of_view=True,
+        mesh_opacity=1.0,
         resolution=(1280, 720),
         render_resolution=None,  # If set, renders at this resolution (can be larger than display)
         use_virtual_display=False,
@@ -149,6 +150,9 @@ class PoseViz(AbstractContextManager):
             show_field_of_view (bool): Whether to visualize an extended pyramid shape indicating the
              field of view of the cameras. Recommended to turn off in multi-camera
                 setups, as otherwise the visualization can get crowded.
+            mesh_opacity (float): Opacity of the body meshes in (0, 1]. Below 1 the meshes
+                are drawn translucent (alpha-blended, faces sorted back to front per frame,
+                with the wireframe edges blended in the same pass).
             resolution ((int, int)): The resolution of the visualization window (width,
                 height) pair.
             render_resolution ((int, int)): The resolution to render at, which can be larger
@@ -294,6 +298,7 @@ class PoseViz(AbstractContextManager):
                 draw_2d_pose,
                 show_camera_wireframe,
                 show_field_of_view,
+                mesh_opacity,
                 resolution,
                 render_resolution,  # None means "match display resolution"
                 use_virtual_display,

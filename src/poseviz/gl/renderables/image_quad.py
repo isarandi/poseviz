@@ -12,6 +12,9 @@ class ImageQuadRenderable(ShaderRenderable, TextureMixin):
         super().__init__(ctx)
         self.opacity = opacity
         self.visible = False
+        # World-space centre of the quad, for back-to-front ordering of the
+        # translucent quads by the renderer
+        self.center_world = None
         self._load_program("textured")
 
         # Quad vertices: [x, y, z, u, v] * 4
@@ -50,6 +53,7 @@ class ImageQuadRenderable(ShaderRenderable, TextureMixin):
         corners_world = camera.image_to_world(
             image_corners, camera_depth=image_plane_distance
         )
+        self.center_world = np.asarray(corners_world, np.float64).mean(0)
 
         # Build vertex data: [x, y, z, u, v]
         texcoords = np.array(
@@ -69,13 +73,20 @@ class ImageQuadRenderable(ShaderRenderable, TextureMixin):
         self._vbo.write(vertex_data.tobytes())
         self.visible = True
 
-    def render(self, view_proj: np.ndarray):
+    def render(self, view_proj: np.ndarray, eye=None):
+        """``eye`` (viewer position, world) is accepted for the uniform interface
+        of the renderer's sorted translucent pass; a quad has no use for it."""
         if not self.visible or self.texture is None:
             return
 
         self.ctx.enable(moderngl.BLEND)
         self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-        self.ctx.depth_mask = False
+        # Translucent quad: depth-tested, but it must not write depth, or
+        # everything drawn after it and behind it (camera wireframes, later
+        # views' geometry) would be cut out of the panel area. moderngl keeps
+        # the depth-write mask on the bound framebuffer; `Context` has no such
+        # attribute, and assigning one there would be a silent no-op.
+        self.ctx.fbo.depth_mask = False
 
         self._bind_texture(0)
         self.program["u_opacity"].value = self.opacity
@@ -83,7 +94,7 @@ class ImageQuadRenderable(ShaderRenderable, TextureMixin):
 
         self.vao.render(moderngl.TRIANGLES)
 
-        self.ctx.depth_mask = True
+        self.ctx.fbo.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
 
     def destroy(self):

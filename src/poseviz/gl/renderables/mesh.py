@@ -60,6 +60,12 @@ class MeshRenderable(ShaderRenderable):
         self.n_instances = 0
         self.visible = False
         self._warned_clamp = False
+        # Current geometry on the CPU side, kept for the per-frame back-to-front
+        # face sort of translucent meshes; center_world serves the renderer's
+        # object-level sort of translucent renderables.
+        self._flat_verts = None
+        self._combined_faces = None
+        self.center_world = None
 
         # Load shader based on color source
         self._load_program(color_source.shader_name)
@@ -92,6 +98,17 @@ class MeshRenderable(ShaderRenderable):
                 self._wire_program, [(vbo_positions, "3f", "in_position")], self._ibo
             )
             self._register_resources(self._wire_program, self._wire_vao)
+
+        # Single-pass "solid wireframe" program for translucent uniform-colour
+        # meshes: faces and edges of every triangle in one sorted draw call
+        # (see render). Other colour sources fall back to the layered draw.
+        self._solid_wire_vao = None
+        if wireframe and color_source.shader_name == "mesh":
+            self._solid_wire_program = load_program(ctx, "mesh_wire")
+            self._solid_wire_vao = ctx.vertex_array(
+                self._solid_wire_program, vao_content, self._ibo
+            )
+            self._register_resources(self._solid_wire_program, self._solid_wire_vao)
 
     def update(self, vertices, color_data=None):
         """Update mesh vertices and optionally color data.
@@ -154,6 +171,9 @@ class MeshRenderable(ShaderRenderable):
         self._vbo_normals.write(normals.tobytes())
         self.vertex_count = len(flat_verts)
         self.visible = True
+        self._flat_verts = flat_verts
+        self._combined_faces = combined_faces
+        self.center_world = flat_verts.astype(np.float64).mean(0)
 
         if color_data is not None:
             self.color_source.update(color_data)
@@ -178,29 +198,88 @@ class MeshRenderable(ShaderRenderable):
         self._ibo.write(combined_faces.astype(np.uint32).tobytes())
         self.index_count = combined_faces.size
 
-    def render(self, view_proj: np.ndarray):
+    def render(self, view_proj: np.ndarray, eye=None):
+        """Draw the mesh.
+
+        A translucent mesh (color source with ``needs_blend``) is alpha-blended
+        without depth writes, and when ``eye`` (viewer position in world
+        coordinates) is given its faces are first sorted back to front for
+        this viewpoint: blending is order-dependent, and a closed body covers
+        every pixel with at least two layers (back and front skin), so the
+        static index order would composite them wrongly. For a uniform-colour
+        mesh the edges are then drawn by the fragment shader (mesh_wire
+        shaders), so faces and edges of both skins go through that one sorted
+        draw call. Other colour sources are drawn as two layers instead, far
+        skin first (back-facing triangles with their edges, then front-facing
+        ones with theirs), which is exact only where no near part's back
+        skin lies in front of a far part's front skin.
+        """
         if not self.visible or self.index_count == 0:
             return
 
+        needs_blend = getattr(self.color_source, "needs_blend", False)
+        if not needs_blend:
+            self._draw_faces(view_proj)
+            if self.wireframe:
+                self._draw_wire(view_proj, 1.0)
+            return
+
+        if eye is not None:
+            self._sort_faces_back_to_front(eye)
+        opacity = float(getattr(self.color_source, "opacity", 1.0))
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.ctx.fbo.depth_mask = False
+        if self._solid_wire_vao is not None:
+            self._draw_solid_wire(view_proj, opacity)
+        elif not self.wireframe:
+            self._draw_faces(view_proj)
+        else:
+            self.ctx.enable(moderngl.CULL_FACE)
+            for cull in ("front", "back"):  # culling 'front' leaves the far skin
+                self.ctx.cull_face = cull
+                self._draw_faces(view_proj)
+                self._draw_wire(view_proj, opacity)
+            self.ctx.cull_face = "back"
+            self.ctx.disable(moderngl.CULL_FACE)
+        self.ctx.fbo.depth_mask = True
+        self.ctx.disable(moderngl.BLEND)
+
+    def _draw_solid_wire(self, view_proj, opacity):
+        prog = self._solid_wire_program
+        prog["u_view_proj"].write(view_proj.astype(np.float32).tobytes())
+        if self._current_view is not None:
+            prog["u_view"].write(self._current_view)
+        prog["u_color"].value = self.color_source.color
+        prog["u_opacity"].value = opacity
+        prog["u_edge_color"].value = (0.0, 0.0, 0.0)
+        prog["u_edge_width"].value = 1.0
+        self._solid_wire_vao.render(moderngl.TRIANGLES, vertices=self.index_count)
+
+    def _draw_faces(self, view_proj):
         self._set_view_proj(view_proj)
         self.color_source.bind(self.program)
-
         # Pass the valid index count explicitly: the IBO is reserved for
         # max_instances meshes and its unwritten tail must not be drawn.
-        needs_blend = getattr(self.color_source, "needs_blend", False)
-        if needs_blend:
-            self.ctx.enable(moderngl.BLEND)
-            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
         self.vao.render(moderngl.TRIANGLES, vertices=self.index_count)
-        if needs_blend:
-            self.ctx.disable(moderngl.BLEND)
 
-        if self.wireframe:
-            self.ctx.wireframe = True
-            self._wire_program["u_view_proj"].write(view_proj.astype(np.float32).tobytes())
-            self._wire_program["u_color"].value = (0.0, 0.0, 0.0)
-            self._wire_vao.render(moderngl.TRIANGLES, vertices=self.index_count)
-            self.ctx.wireframe = False
+    def _draw_wire(self, view_proj, opacity):
+        self.ctx.wireframe = True
+        self._wire_program["u_view_proj"].write(view_proj.astype(np.float32).tobytes())
+        self._wire_program["u_color"].value = (0.0, 0.0, 0.0)
+        self._wire_program["u_opacity"].value = opacity
+        self._wire_vao.render(moderngl.TRIANGLES, vertices=self.index_count)
+        self.ctx.wireframe = False
+
+    def _sort_faces_back_to_front(self, eye):
+        """Rewrite the IBO with the faces of all instances ordered by decreasing
+        distance of their centroid from ``eye`` (painter's order). About 1 ms
+        for a SMPL body; exact except for mutually intersecting faces."""
+        faces = self._combined_faces
+        centroids = self._flat_verts[faces].mean(1)
+        d2 = ((centroids - np.asarray(eye, np.float32)) ** 2).sum(1)
+        order = np.argsort(-d2, kind="stable")
+        self._ibo.write(np.ascontiguousarray(faces[order], dtype=np.uint32).tobytes())
 
     def destroy(self):
         self.color_source.release()

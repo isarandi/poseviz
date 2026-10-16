@@ -1,3 +1,4 @@
+import atexit
 import ctypes
 import dataclasses
 import logging
@@ -7,6 +8,7 @@ import queue
 import signal
 import threading
 import traceback
+import weakref
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from typing import Optional, TYPE_CHECKING
@@ -262,6 +264,17 @@ class PoseViz(AbstractContextManager):
             ]
             self.ring_index = 0
 
+        # Interpreter-exit guard: if the (daemon) visualizer process dies
+        # while the parent still has unflushed frames in q_messages_post, the
+        # mp.Queue feeder thread can never finish (the parent's own read fd
+        # keeps the pipe open, so no EPIPE) and multiprocessing's exit
+        # finalizer joins that feeder WITHOUT a timeout -> the parent would
+        # hang forever at exit (typically when a fault was raised mid-update,
+        # so close() was never reached). Cancelling the feeder join at exit is
+        # always safe here: by that point either close() drained everything
+        # (cancel is a no-op) or the data could never be delivered anyway.
+        atexit.register(_cancel_queue_join_at_exit, weakref.ref(self))
+
         self.posedata_waiter_thread = threading.Thread(
             target=main_posedata_waiter,
             args=(
@@ -269,6 +282,7 @@ class PoseViz(AbstractContextManager):
                 self.q_messages_post,
                 self._pending_faults,
                 self._output_active,
+                weakref.ref(self),
             ),
             daemon=True,
         )
@@ -487,11 +501,10 @@ class PoseViz(AbstractContextManager):
         if not self.gpu_frames:
             self.ring_index = (self.ring_index + 1) % self.ringbuffer_size
 
-        self.q_messages_pre.put(
+        self._put_pre(
             messages.UpdateScene(
                 view_infos=view_infos, viz_camera=viz_camera, viz_imshape=viz_imshape
-            ),
-            block=True,  # Always block here since we checked above
+            )
         )
 
     def reinit_camera_view(self):
@@ -499,11 +512,11 @@ class PoseViz(AbstractContextManager):
         a new sequence is now being visualized, so the view camera may need to be
         reinitialized.
         """
-        self.q_messages_pre.put(messages.ReinitCameraView())
+        self._put_pre(messages.ReinitCameraView())
 
     def pause(self):
         """Pauses the visualization once the already-buffered updates have been displayed."""
-        self.q_messages_pre.put(messages.Pause())
+        self._put_pre(messages.Pause())
 
     def resume(self):
         """Resumes a paused visualization.
@@ -533,7 +546,7 @@ class PoseViz(AbstractContextManager):
         self._check_faults()
         if new_video_path is not None or new_camera_trajectory_path is not None:
             self._output_active[0] = True
-            self.q_messages_pre.put(
+            self._put_pre(
                 messages.StartSequence(
                     video_path=new_video_path,
                     fps=fps if fps is not None else 30,
@@ -552,7 +565,7 @@ class PoseViz(AbstractContextManager):
         """
         self._check_faults()
         self._output_active[0] = False
-        self.q_messages_pre.put(messages.EndSequence())
+        self._put_pre(messages.EndSequence())
 
     def close(self, raise_on_error=True):
         """Closes the visualization process and window.
@@ -600,6 +613,10 @@ class PoseViz(AbstractContextManager):
 
         self.visualizer_process.join()
         self.posedata_waiter_thread.join(timeout=5.0)
+        # The child is gone: nothing can consume q_messages_post anymore. If it
+        # exited cleanly the queue is empty and this is a no-op; if it crashed,
+        # this prevents the feeder-join deadlock at interpreter exit.
+        self.q_messages_post.cancel_join_thread()
 
         self._drain_fault_queue(timeout=0.25)
         exitcode = self.visualizer_process.exitcode
@@ -615,6 +632,36 @@ class PoseViz(AbstractContextManager):
         if raise_on_error and self._pending_faults:
             raise _fault_to_error(self._pending_faults.pop(0))
         return list(self._sequence_reports)
+
+    def _put_pre(self, msg, block=True):
+        """Enqueue a message for the visualizer, without ever blocking forever.
+
+        A plain blocking put could hang indefinitely when the visualizer
+        process has died (the waiter thread stops forwarding and the queue
+        stays full). Instead: wait in 1-second slices, and between slices
+        surface any pending fault / detect child death as a VisualizerError.
+        """
+        while True:
+            self._check_faults()
+            if not self.visualizer_process.is_alive():
+                self._drain_fault_queue(timeout=0.25)
+                if not self._pending_faults:
+                    self._pending_faults.append(
+                        messages.Fault(
+                            seq_index=None,
+                            context="visualizer process terminated unexpectedly",
+                            error_type="ProcessDeath",
+                            error_message=f"exit code {self.visualizer_process.exitcode}",
+                        )
+                    )
+                raise _fault_to_error(self._pending_faults.pop(0))
+            try:
+                self.q_messages_pre.put(msg, timeout=1.0)
+                return
+            except queue.Full:
+                if not block:
+                    return
+                continue
 
     def _check_faults(self):
         """Raise a VisualizerError if the visualizer has reported a failure.
@@ -652,6 +699,15 @@ class _ImmediateResult:
 
     def get(self):
         return self._value
+
+
+def _cancel_queue_join_at_exit(viz_ref):
+    viz = viz_ref()
+    if viz is not None:
+        try:
+            viz.q_messages_post.cancel_join_thread()
+        except Exception:
+            pass
 
 
 def _main_visualize_gl(q_messages, q_faults, *args, **kwargs):
@@ -703,8 +759,22 @@ def _terminate_on_parent_death():
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
-def main_posedata_waiter(q_posedata_pre, q_posedata_post, fault_sink, output_active):
+def main_posedata_waiter(q_posedata_pre, q_posedata_post, fault_sink, output_active, viz_ref=None):
     import time
+
+    def put_post(msg):
+        """Forward to the visualizer; give up if the visualizer process died
+        (a plain blocking put would wedge this thread forever on a full queue).
+        Returns False if the message was abandoned."""
+        while True:
+            try:
+                q_posedata_post.put(msg, timeout=1.0)
+                return True
+            except queue.Full:
+                viz = viz_ref() if viz_ref is not None else None
+                if viz is not None and not viz.visualizer_process.is_alive():
+                    return False
+                continue
     _t_get = 0.0
     _t_resolve = 0.0
     _t_put = 0.0
@@ -748,7 +818,9 @@ def main_posedata_waiter(q_posedata_pre, q_posedata_post, fault_sink, output_act
             consec_drops = 0
             drops_reported = False
         t2 = time.perf_counter()
-        q_posedata_post.put(msg)
+        if not put_post(msg):
+            q_posedata_pre.task_done()
+            return
         t3 = time.perf_counter()
         q_posedata_pre.task_done()
 

@@ -6,7 +6,9 @@ import multiprocessing as mp
 import os
 import queue
 import signal
+import sys
 import threading
+import time
 import traceback
 import weakref
 from collections.abc import Sequence
@@ -749,9 +751,21 @@ def _fault_to_error(fault):
 
 def _terminate_on_parent_death():
     # Make sure the visualizer process is terminated when the parent process dies, for whatever reason
-    prctl = ctypes.CDLL("libc.so.6").prctl
-    PR_SET_PDEATHSIG = 1
-    prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+    if sys.platform.startswith("linux"):
+        prctl = ctypes.CDLL("libc.so.6").prctl
+        PR_SET_PDEATHSIG = 1
+        prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+    else:
+        # No PR_SET_PDEATHSIG outside Linux (e.g. macOS): watch for the parent to be
+        # gone (the process gets re-parented) and terminate then.
+        parent_pid = os.getppid()
+
+        def watch_parent():
+            while os.getppid() == parent_pid:
+                time.sleep(0.5)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        threading.Thread(target=watch_parent, daemon=True).start()
 
     # ignore sigterm and sigint
     # without this, a single CTRL+C leaves the process hanging

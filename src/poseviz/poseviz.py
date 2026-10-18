@@ -87,6 +87,7 @@ class PoseViz(AbstractContextManager):
         fullscreen=False,
         gpu_frames=False,
         egl_device_index=None,
+        latest_only=False,
     ):
         """The main class that creates a visualizer process, and provides an interface to update
         the visualization state.
@@ -222,6 +223,12 @@ class PoseViz(AbstractContextManager):
                 that unless ``gpu_encode`` is False the devices are searched for an
                 NVIDIA GPU.
                 Only relevant in headless mode.
+            latest_only (bool): For live streams. When the visualizer falls behind, it
+                shows only the newest of the queued scene updates and skips the older
+                ones (other messages keep their order), and it shows a new update as soon
+                as it arrives instead of at the next ``viz_fps`` tick. Skipped updates
+                are also missing from the output video. Combine with a small
+                ``queue_size``, so that updates cannot pile up before the visualizer.
         """
 
         if headless is None:
@@ -338,6 +345,7 @@ class PoseViz(AbstractContextManager):
                 paused,
                 self.resume_value,
                 egl_device_index,
+                latest_only,
             ),
             daemon=True,
         )

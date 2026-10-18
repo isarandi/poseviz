@@ -69,8 +69,10 @@ class PoseVizGLSide:
         paused=False,
         resume_flag=None,
         egl_device_index=None,
+        latest_only=False,
     ):
         self.q_messages = q_messages
+        self.latest_only = latest_only
         self.q_faults = q_faults
         self.egl_device_index = egl_device_index
         self.video_writer = None  # Will be set based on mode
@@ -260,6 +262,9 @@ class PoseVizGLSide:
                     continue
                 else:
                     msg = messages.Nothing()
+            elif self.latest_only and pending_msg is not None:
+                # Live mode: show the newest content now instead of at the next tick
+                msg, pending_msg = self._newest_scene(pending_msg)
             elif remaining > 0.001:
                 # Buffer content during idle time, but don't render yet
                 if pending_msg is None:
@@ -486,6 +491,23 @@ class PoseVizGLSide:
                 self.render()
             except Exception:
                 logger.exception("Error while rendering.")
+
+    def _newest_scene(self, msg):
+        """Skip scene updates that a newer one, already queued, supersedes.
+
+        Returns the message to handle now and the next message to handle (or None). Only
+        consecutive scene updates are skipped; other messages keep their order.
+        """
+        while isinstance(msg, messages.UpdateScene):
+            try:
+                next_msg = self.q_messages.get_nowait()
+            except queue.Empty:
+                return msg, None
+            if not isinstance(next_msg, messages.UpdateScene):
+                return msg, next_msg
+            self.q_messages.task_done()  # the skipped update
+            msg = next_msg
+        return msg, None
 
     def _check_resume_flag(self):
         """Apply an out-of-band resume request (see PoseViz.resume).
